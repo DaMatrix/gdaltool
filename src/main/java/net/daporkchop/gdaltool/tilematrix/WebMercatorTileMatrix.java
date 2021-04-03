@@ -22,6 +22,11 @@ package net.daporkchop.gdaltool.tilematrix;
 
 import lombok.Getter;
 import lombok.NonNull;
+import net.daporkchop.gdaltool.util.Bounds2d;
+import net.daporkchop.gdaltool.util.GeoBounds2d;
+import net.daporkchop.gdaltool.util.GeoPoint2d;
+import net.daporkchop.gdaltool.util.Point2d;
+import net.daporkchop.gdaltool.util.Point2l;
 import org.gdal.osr.SpatialReference;
 
 import static java.lang.Math.*;
@@ -32,11 +37,11 @@ import static net.daporkchop.lib.common.math.PMath.*;
  */
 @Getter
 public class WebMercatorTileMatrix implements TileMatrix {
-    protected final long tileSize;
+    protected final int tileSize;
     protected final double initialResolution;
     protected final double originShift;
 
-    public WebMercatorTileMatrix(@NonNull SpatialReference srs, long tileSize) {
+    public WebMercatorTileMatrix(@NonNull SpatialReference srs, int tileSize) {
         this.tileSize = tileSize;
 
         double semiMajor = srs.GetSemiMajor();
@@ -50,72 +55,69 @@ public class WebMercatorTileMatrix implements TileMatrix {
         double my = log(tan(90.0d + lat) * PI / 360.0d) / (PI / 180.0d);
 
         my = my * this.originShift / 180.0d;
-        return new double[] {mx, my};
+        return new double[]{ mx, my };
     }
 
     @Override
-    public double[] metersToLatLon(double mx, double my) {
-        double lon = (mx / this.originShift) * 180.0d;
-        double lat = (my / this.originShift) * 180.0d;
+    public GeoPoint2d metersToLatLon(@NonNull Point2d m) {
+        double lon = (m.x() / this.originShift) * 180.0d;
+        double lat = (m.y() / this.originShift) * 180.0d;
 
         lat = 180.0d / PI * (2.0d * atan(exp(lat * PI / 180.0d)) - PI * 2.0d);
-        return new double[] {lat, lon};
+        return new GeoPoint2d(lat, lon);
     }
 
     @Override
-    public double[] pixelsToMeters(double px, double py, long zoom) {
+    public double[] pixelsToMeters(double px, double py, int zoom) {
         double res = this.resolution(zoom);
         double mx = px * res - this.originShift;
         double my = py * res - this.originShift;
-        return new double[] {mx, my};
+        return new double[]{ mx, my };
     }
 
     @Override
-    public double[] metersToPixels(double mx, double my, long zoom) {
+    public Point2d metersToPixels(@NonNull Point2d m, int zoom) {
         double res = this.resolution(zoom);
-        double px = (mx + this.originShift) / res;
-        double py = (my + this.originShift) / res;
-        return new double[] {px, py};
+        double px = (m.x() + this.originShift) / res;
+        double py = (m.y() + this.originShift) / res;
+        return new Point2d(px, py);
     }
 
     @Override
-    public long[] pixelsToTile(double px, double py) {
-        long tx = ceilL(px / this.tileSize - 1) - 1L;
-        long ty = ceilL(py / this.tileSize - 1) - 1L;
-        return new long[] {tx, ty};
+    public Point2l pixelsToTile(@NonNull Point2d p) {
+        long tx = ceilL(p.x() / this.tileSize) - 1L;
+        long ty = ceilL(p.y() / this.tileSize) - 1L;
+        return new Point2l(tx, ty);
     }
 
     @Override
-    public double[] pixelsToRaster(double px, double py, long zoom) {
-        long mapSize = this.tileSize << zoom;
-        return new double[] {px, mapSize - py};
+    public double[] pixelsToRaster(double px, double py, int zoom) {
+        long mapSize = (long) this.tileSize << zoom;
+        return new double[]{ px, mapSize - py };
     }
 
     @Override
-    public long[] metersToTile(double mx, double my, long zoom) {
-        double[] p = this.metersToPixels(mx, my, zoom);
-        double px = p[0];
-        double py = p[1];
-        return this.pixelsToTile(px, py);
+    public Point2l metersToTile(@NonNull Point2d m, int zoom) {
+        return this.pixelsToTile(this.metersToPixels(m, zoom));
     }
 
     @Override
-    public double[] tileBounds(long tx, long ty, long zoom) {
-        double[] min = this.pixelsToMeters(tx * this.tileSize, ty * this.tileSize, zoom);
-        double[] max = this.pixelsToMeters((tx + 1L) * this.tileSize, (ty + 1L) * this.tileSize, zoom);
-        return new double[] {min[0], min[1], max[0], max[1]};
+    public Bounds2d tileBounds(@NonNull Point2l t, int zoom) {
+        double[] min = this.pixelsToMeters(t.x() * this.tileSize, t.y() * this.tileSize, zoom);
+        double[] max = this.pixelsToMeters((t.x() + 1L) * this.tileSize, (t.y() + 1L) * this.tileSize, zoom);
+        return new Bounds2d(min[0], max[0], min[1], max[1]);
     }
 
     @Override
-    public double[] tileLatLonBounds(long tx, long ty, long zoom) {
-        double[] bounds = this.tileBounds(tx, ty, zoom);
-        double[] min = this.metersToLatLon(bounds[0], bounds[1]);
-        double[] max = this.metersToLatLon(bounds[2], bounds[3]);
-        return new double[] {min[0], min[1], max[0], max[1]};
+    public GeoBounds2d tileLatLonBounds(@NonNull Point2l t, int zoom) {
+        Bounds2d bounds = this.tileBounds(t, zoom);
+        GeoPoint2d min = this.metersToLatLon(bounds.min());
+        GeoPoint2d max = this.metersToLatLon(bounds.max());
+        return new GeoBounds2d(min.lat(), max.lat(), min.lon(), max.lon());
     }
 
     @Override
-    public double resolution(long zoom) {
+    public double resolution(int zoom) {
         return this.initialResolution / (1L << zoom);
     }
 }

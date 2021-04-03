@@ -18,21 +18,21 @@
  *
  */
 
-package net.daporkchop.gdaltool;
+package net.daporkchop.gdaltool.util;
 
-import net.daporkchop.gdaltool.mode.Gdal2Tiles;
-import org.gdal.gdal.gdal;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+import lombok.ToString;
 
-import java.nio.file.Paths;
-
-public class Main {
-    public static void main(String... args) {
-        gdal.AllRegister();
-
-        //new Gdal2Tiles().src(Paths.get("/home/daporkchop/Pictures/pepsilogo.png")).run();
-        new Gdal2Tiles(
-                Paths.get("/media/daporkchop/2tb/si.vrt"),
-                Paths.get("/media/daporkchop/2tb/test/"),
-                new Gdal2Tiles.Options()).run();
-    }
+/**
+ * @author DaPorkchop_
+ */
+@RequiredArgsConstructor
+@Getter
+@ToString
+@EqualsAndHashCode
+public final class GeoPoint2d {
+    protected final double lat;
+    protected final double lon;
 }

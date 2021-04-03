@@ -28,7 +28,7 @@ ext {
     //dependency things
     gdalVersion = "3.0.0"
     junitVersion = "4.12"
-    lombokVersion = "1.16.20"
+    lombokVersion = "1.18.16"
     porklibVersion = "0.5.5-SNAPSHOT"
 }
 

@@ -20,16 +20,23 @@
 
 package net.daporkchop.gdaltool.tilematrix;
 
+import lombok.NonNull;
+import net.daporkchop.gdaltool.util.Bounds2d;
+import net.daporkchop.gdaltool.util.GeoBounds2d;
+import net.daporkchop.gdaltool.util.GeoPoint2d;
+import net.daporkchop.gdaltool.util.Point2d;
+import net.daporkchop.gdaltool.util.Point2l;
+
 /**
  * @author DaPorkchop_
  */
 public interface TileMatrix {
-    long MAX_ZOOM_LEVEL = 32;
+    int MAX_ZOOM_LEVEL = 32;
 
     /**
      * @return the size of a tile, in pixels
      */
-    long tileSize();
+    int tileSize();
 
     /**
      * Converts given lat/lon in WGS84 Datum to XY in Spherical Mercator EPSG:3857
@@ -39,53 +46,53 @@ public interface TileMatrix {
     /**
      * Converts XY point from Spherical Mercator EPSG:3857 to lat/lon in WGS84 Datum
      */
-    double[] metersToLatLon(double mx, double my);
+    GeoPoint2d metersToLatLon(@NonNull Point2d m);
 
     /**
      * Converts pixel coordinates in given zoom level of pyramid to EPSG:3857
      */
-    double[] pixelsToMeters(double px, double py, long zoom);
+    double[] pixelsToMeters(double px, double py, int zoom);
 
     /**
      * Converts EPSG:3857 to pyramid pixel coordinates in given zoom level
      */
-    double[] metersToPixels(double mx, double my, long zoom);
+    Point2d metersToPixels(@NonNull Point2d m, int zoom);
 
     /**
      * Returns a tile covering region in given pixel coordinates
      */
-    long[] pixelsToTile(double px, double py);
+    Point2l pixelsToTile(@NonNull Point2d p);
 
     /**
      * Move the origin of pixel coordinates to top-left corner
      */
-    double[] pixelsToRaster(double px, double py, long zoom);
+    double[] pixelsToRaster(double px, double py, int zoom);
 
     /**
      * Returns tile for given mercator coordinates
      */
-    long[] metersToTile(double mx, double my, long zoom);
+    Point2l metersToTile(@NonNull Point2d m, int zoom);
 
     /**
-     * Returns tile for given mercator coordinates
+     * Returns bounds of the given tile in EPSG:3857 coordinates
      */
-    double[] tileBounds(long tx, long ty, long zoom);
+    Bounds2d tileBounds(@NonNull Point2l t, int zoom);
 
     /**
      * Returns bounds of the given tile in latitude/longitude using WGS84 datum
      */
-    double[] tileLatLonBounds(long tx, long ty, long zoom);
+    GeoBounds2d tileLatLonBounds(@NonNull Point2l t, int zoom);
 
     /**
      * Resolution (meters/pixel) for given zoom level (measured at Equator)
      */
-    double resolution(long zoom);
+    double resolution(int zoom);
 
     /**
      * Maximal scaledown zoom of the pyramid closest to the pixelSize.
      */
-    default long zoomForPixelSize(double pixelSize) {
-        for (long zoom = 0; zoom < MAX_ZOOM_LEVEL; zoom++) {
+    default int zoomForPixelSize(double pixelSize) {
+        for (int zoom = 0; zoom < MAX_ZOOM_LEVEL; zoom++) {
             if (pixelSize > this.resolution(zoom)) {
                 return zoom;
             }
