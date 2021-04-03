@@ -31,8 +31,9 @@ public class Main {
 
         //new Gdal2Tiles().src(Paths.get("/home/daporkchop/Pictures/pepsilogo.png")).run();
         new Gdal2Tiles(
-                Paths.get("/media/daporkchop/2tb/si.vrt"),
-                Paths.get("/media/daporkchop/2tb/test/"),
-                new Gdal2Tiles.Options()).run();
+                //Paths.get("/media/daporkchop/2tb/si.vrt"), Paths.get("/media/daporkchop/2tb/si-tiles/"),
+                Paths.get("/media/daporkchop/2tb/bepis.tiff"), Paths.get("/media/daporkchop/2tb/bepis-tiles/"),
+                new Gdal2Tiles.Options()
+        ).run();
     }
 }

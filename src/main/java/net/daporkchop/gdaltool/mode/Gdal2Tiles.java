@@ -59,7 +59,7 @@ import static org.gdal.osr.osr.*;
  */
 @Setter
 public class Gdal2Tiles {
-    protected static GeoQuery geoQuery(@NonNull double[] gt, int rasterX, int rasterY, double ulx, double uly, double lrx, double lry) {
+    protected static GeoQuery geoQuery(@NonNull double[] gt, int rasterX, int rasterY, int querySize, double ulx, double uly, double lrx, double lry) {
         int rx = (int) ((ulx - gt[0]) / gt[1] + 0.001d);
         int ry = (int) ((uly - gt[3]) / gt[5] + 0.001d);
         int rxSize = max(1, (int) ((lrx - ulx) / gt[1] + 0.5d));
@@ -67,8 +67,8 @@ public class Gdal2Tiles {
 
         int wx = 0;
         int wy = 0;
-        int wxSize = rxSize;
-        int wySize = rySize;
+        int wxSize = querySize;
+        int wySize = querySize;
 
         if (rx < 0) {
             int rxShift = abs(rx);
@@ -99,8 +99,10 @@ public class Gdal2Tiles {
 
     protected final Dataset inputDataset;
     protected final ThreadLocal<Dataset> tlWarpedInputDataset;
+    protected final ThreadLocal<ByteBuffer> tlBuffer;
     protected final int input_bands;
     protected final int input_dataType;
+    protected final int[] allBands;
     protected final Double[] input_noDataValues;
 
     protected final Path outputFolder;
@@ -112,6 +114,7 @@ public class Gdal2Tiles {
 
     protected final SpatialReference in_srs;
     protected final SpatialReference out_srs;
+    protected final String out_srsWkt;
     protected final Bounds2l[] tMinMax;
     protected TileMatrix tileMatrix;
 
@@ -133,6 +136,9 @@ public class Gdal2Tiles {
         this.profile = options.profile();
         this.xyz = options.xyz();
 
+        checkState(System.getenv("GDAL_RASTERIO_RESAMPLING").equals(options.resampling().name().toUpperCase()),
+                "must set environment variable GDAL_RASTERIO_RESAMPLING=%s", options.resampling().name().toUpperCase());
+
         this.outDrv = getDriverByName(options.tileDriver());
 
         this.outputFolder = Files.createDirectories(outputFolder);
@@ -149,6 +155,8 @@ public class Gdal2Tiles {
                 this.inputDataset.getRasterXSize(), this.inputDataset.getRasterYSize(), this.inputDataset.getRasterCount());
         this.input_bands = this.inputDataset.GetRasterCount();
         this.input_dataType = this.inputDataset.GetRasterBand(1).GetRasterDataType();
+        this.allBands = IntStream.rangeClosed(1, this.input_bands).toArray();
+        this.tlBuffer = ThreadLocal.withInitial(() -> ByteBuffer.allocateDirect(this.tileSize * this.tileSize * (gdal.GetDataTypeSize(this.input_dataType) / 8) * this.input_bands));
         this.input_noDataValues = getNoDataValues(this.inputDataset);
 
         this.in_srs = setupInputSrs(this.inputDataset, options.s_srs());
@@ -162,6 +170,7 @@ public class Gdal2Tiles {
         }
 
         this.out_srs = this.profile.getSrsForInput(this.inputDataset, this.in_srs);
+        this.out_srsWkt = this.out_srs.ExportToWkt();
 
         Dataset warpedInputDataset = this.inputDataset;
         if (this.profile != CuttingProfile.RASTER) {
@@ -181,8 +190,8 @@ public class Gdal2Tiles {
         this.out_bounds = new Bounds2d(
                 this.out_gt[0],
                 this.out_gt[0] + warpedInputDataset.GetRasterXSize() * this.out_gt[1],
-                this.out_gt[3],
-                this.out_gt[3] + warpedInputDataset.GetRasterYSize() * this.out_gt[1]);
+                this.out_gt[3] - warpedInputDataset.GetRasterYSize() * this.out_gt[1],
+                this.out_gt[3]);
 
         CuttingProfile.ProjectionData projectionData = this.profile.getProjectionData(this.tileSize, this.in_srs, this.out_srs, this.inputDataset, warpedInputDataset, this.out_bounds);
         if (minZoom < 0) {
@@ -200,11 +209,11 @@ public class Gdal2Tiles {
         this.maxZoom = maxZoom;
     }
 
-    protected Dataset createMemTile() {
-        Dataset ds = MEM_DRIVER.Create("", this.tileSize, this.tileSize, this.input_bands, this.input_dataType);
+    protected Dataset createMemTile(int size) {
+        Dataset ds = MEM_DRIVER.Create("", size, size, this.input_bands, this.input_dataType);
 
         for (int b = 1; b <= this.input_bands; b++) {
-            Band band = ds.GetRasterBand(b );
+            Band band = ds.GetRasterBand(b);
             Double noData = this.input_noDataValues[b - 1];
             if (noData != null) {
                 band.SetNoDataValue(noData);
@@ -217,49 +226,119 @@ public class Gdal2Tiles {
         return ds;
     }
 
-    protected Stream<TileDetail> getTilePositions(int zoom) {
+    protected Stream<TilePos> getTilePositions(int zoom) {
         Bounds2l tBounds = this.tMinMax[zoom];
         return LongStream.rangeClosed(tBounds.minY(), tBounds.maxY()).boxed()
                 .flatMap(_ty -> {
                     long ty = _ty; //unbox lol
                     return LongStream.rangeClosed(tBounds.minX(), tBounds.maxX())
-                            .mapToObj(tx -> {
-                                long yTile = this.xyz ? ((1L << zoom) - 1L) - ty : ty;
-                                Path tileFile = this.tileFile(zoom, tx, yTile);
-                                Bounds2d b = this.tileMatrix.tileBounds(new Point2l(tx, ty), zoom);
-
-                                GeoQuery q = geoQuery(this.out_gt, this.out_rasterXSize, this.out_rasterYSize, b.minX(), b.maxY(), b.maxX(), b.minY());
-                                return new TileDetail(tx, yTile, zoom, q.rx, q.ry, q.rxSize, q.rySize, q.wx, q.wy, q.wxSize, q.wySize, tileFile);
-                            });
+                            .mapToObj(tx -> new TilePos(tx, ty, zoom));
                 });
+    }
+
+    protected Stream<TileDetail> getTilePositionsDetail(int zoom) {
+        return this.getTilePositions(zoom).map(pos -> {
+            Path tileFile = this.tileFile(zoom, pos.tx, pos.ty);
+            Bounds2d b = this.tileMatrix.tileBounds(new Point2l(pos.tx, pos.ty), zoom);
+
+            GeoQuery q = geoQuery(this.out_gt, this.out_rasterXSize, this.out_rasterYSize, this.tileSize, b.minX(), b.maxY(), b.maxX(), b.minY());
+            return new TileDetail(pos.tx, pos.ty, zoom, q.rx, q.ry, q.rxSize, q.rySize, q.wx, q.wy, q.wxSize, q.wySize, tileFile);
+        });
     }
 
     @SneakyThrows(IOException.class)
     protected void createBaseTile(@NonNull TileDetail t) {
-        Dataset tile = this.createMemTile();
+        Dataset tile = this.createMemTile(this.tileSize);
         Dataset input = this.tlWarpedInputDataset.get();
 
+        ByteBuffer buffer = this.tlBuffer.get();
+
         if (t.rxSize != 0 && t.rySize != 0 && t.wxSize != 0 && t.wySize != 0) {
-            for (int b = 1; b <= this.input_bands; b++) {
-                ByteBuffer data = input.GetRasterBand(b).ReadRaster_Direct(t.rx, t.ry, t.rxSize, t.rySize, t.wxSize, t.wySize, this.input_dataType);
-                if (data != null) {
-                    tile.GetRasterBand(b).WriteRaster_Direct(t.wx, t.wy, t.wxSize, t.wySize, this.input_dataType, data);
-                    PUnsafe.pork_releaseBuffer(data);
-                }
+            int r = input.ReadRaster_Direct(t.rx, t.ry, t.rxSize, t.rySize, t.wxSize, t.wySize, this.input_dataType, buffer, this.allBands);
+            if (r == CE_None) {
+                tile.WriteRaster_Direct(t.wx, t.wy, t.wxSize, t.wySize, t.wxSize, t.wySize, this.input_dataType, buffer, this.allBands);
             }
         }
 
+        tile.SetProjection(this.out_srsWkt);
+        Bounds2d b = this.tileMatrix.tileBounds(new Point2l(t.tx, t.ty), t.tz);
+        tile.SetGeoTransform(new double[] {
+                b.minX(), (b.maxX() - b.minX()) / this.tileSize, 0.0d,
+                b.minY(), 0.0d, -(b.maxY() - b.minY()) / this.tileSize
+        });
+
         Files.createDirectories(t.tileFile.getParent());
-        this.outDrv.CreateCopy(t.tileFile.toString(), tile, 0);
+        this.outDrv.CreateCopy(t.tileFile.toString(), tile, 0).delete();
 
         tile.delete();
     }
 
+    @SneakyThrows(IOException.class)
+    protected void createOverviewTile(@NonNull TilePos pos) {
+        Path tileFile = this.tileFile(pos.tz, pos.tx, pos.ty);
+
+        Dataset query = this.createMemTile(this.tileSize << 1);
+        Dataset tile = this.createMemTile(this.tileSize);
+        ByteBuffer buffer = this.tlBuffer.get();
+
+        int cnt = 0;
+        for (long x = pos.tx * 2L; x < pos.tx * 2L + 2L; x++) {
+            for (long y = pos.ty * 2L; y < pos.ty * 2L + 2L; y++) {
+                Path baseTilePath = this.tileFile(pos.tz + 1, x, y);
+                if (!Files.exists(baseTilePath)) {
+                    continue;
+                }
+
+                Dataset base = gdal.Open(baseTilePath.toString(), GA_ReadOnly);
+
+                int tilePosX = toInt((x - pos.tx * 2L) * this.tileSize);
+                int tilePosY = toInt((y - pos.ty * 2L) * this.tileSize);
+                if (this.xyz) {
+                    tilePosY = this.tileSize - tilePosY;
+                }
+
+                int r = base.ReadRaster_Direct(0, 0, this.tileSize, this.tileSize, this.tileSize, this.tileSize, this.input_dataType, buffer, this.allBands);
+                if (r == CE_None) {
+                    query.WriteRaster_Direct(tilePosX, tilePosY, this.tileSize, this.tileSize, this.tileSize, this.tileSize, this.input_dataType, buffer, this.allBands);
+                }
+
+                base.delete();
+                cnt++;
+            }
+        }
+
+        if (cnt != 0) {
+            for (int band = 1; band <= this.input_bands; band++) {
+                checkState(gdal.RegenerateOverview(query.GetRasterBand(band), tile.GetRasterBand(band), "AVERAGE") == CE_None);
+            }
+
+            tile.SetProjection(this.out_srsWkt);
+            Bounds2d b = this.tileMatrix.tileBounds(new Point2l(pos.tx, pos.ty), pos.tz);
+            tile.SetGeoTransform(new double[] {
+                    b.minX(), (b.maxX() - b.minX()) / this.tileSize, 0.0d,
+                    b.minY(), 0.0d, -(b.maxY() - b.minY()) / this.tileSize
+            });
+
+            Files.createDirectories(tileFile.getParent());
+            this.outDrv.CreateCopy(tileFile.toString(), tile, 0).delete();
+        }
+
+        query.delete();
+        tile.delete();
+    }
+
     public void run() {
-        this.getTilePositions(this.maxZoom).forEach(this::createBaseTile);
+        this.getTilePositionsDetail(this.maxZoom).parallel().forEach(this::createBaseTile);
+
+        for (int zoom = this.maxZoom - 1; zoom >= this.minZoom; zoom--) {
+            this.getTilePositions(zoom).parallel().forEach(this::createOverviewTile);
+        }
     }
 
     protected Path tileFile(int zoom, long tx, long ty) {
+        if (this.xyz) {
+            ty = ((1L << zoom) - 1L) - ty;
+        }
         return this.outputFolder.resolve(String.valueOf(zoom)).resolve(String.valueOf(tx)).resolve(ty + "." + this.outExt);
     }
 
@@ -351,6 +430,13 @@ public class Gdal2Tiles {
         public final int wySize;
         @NonNull
         public final Path tileFile;
+    }
+
+    @RequiredArgsConstructor
+    protected static class TilePos {
+        public final long tx;
+        public final long ty;
+        public final int tz;
     }
 
     @Getter
