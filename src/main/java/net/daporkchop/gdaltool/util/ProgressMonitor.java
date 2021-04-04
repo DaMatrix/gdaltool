@@ -20,19 +20,40 @@
 
 package net.daporkchop.gdaltool.util;
 
-import lombok.EqualsAndHashCode;
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
-import lombok.ToString;
-
 /**
  * @author DaPorkchop_
  */
-@RequiredArgsConstructor
-@Getter
-@ToString
-@EqualsAndHashCode
-public final class Point2d {
-    protected final double x;
-    protected final double y;
+public class ProgressMonitor {
+    protected static final double STEP = 2.5d;
+
+    protected long done;
+    protected double progress;
+    protected final long total;
+
+    public ProgressMonitor(long total) {
+        this.total = total;
+
+        System.out.print(0);
+        System.out.flush();
+    }
+
+    public synchronized void step() {
+        this.done++;
+        double progress = (double) this.done / this.total * 100.0d;
+        if (progress >= this.progress + STEP) {
+            do {
+                this.progress += STEP;
+                if ((long) this.progress % 10L == 0) {
+                    System.out.print((long) this.progress);
+                    if (this.progress == 100.0d) {
+                        System.out.println();
+                    }
+                } else {
+                    System.out.print('.');
+                }
+            }
+            while (progress >= this.progress + STEP);
+            System.out.flush();
+        }
+    }
 }

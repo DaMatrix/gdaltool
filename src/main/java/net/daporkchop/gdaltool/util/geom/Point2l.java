@@ -18,7 +18,7 @@
  *
  */
 
-package net.daporkchop.gdaltool.util;
+package net.daporkchop.gdaltool.util.geom;
 
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -32,17 +32,7 @@ import lombok.ToString;
 @Getter
 @ToString
 @EqualsAndHashCode
-public final class GeoBounds2d {
-    protected final double minLat;
-    protected final double maxLat;
-    protected final double minLon;
-    protected final double maxLon;
-
-    public Point2d min() {
-        return new Point2d(this.minLat, this.minLon);
-    }
-
-    public Point2d max() {
-        return new Point2d(this.maxLat, this.maxLon);
-    }
+public final class Point2l {
+    protected final long x;
+    protected final long y;
 }

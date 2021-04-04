@@ -22,11 +22,11 @@ package net.daporkchop.gdaltool.tilematrix;
 
 import lombok.Getter;
 import lombok.NonNull;
-import net.daporkchop.gdaltool.util.Bounds2d;
-import net.daporkchop.gdaltool.util.GeoBounds2d;
-import net.daporkchop.gdaltool.util.GeoPoint2d;
-import net.daporkchop.gdaltool.util.Point2d;
-import net.daporkchop.gdaltool.util.Point2l;
+import net.daporkchop.gdaltool.util.geom.Bounds2d;
+import net.daporkchop.gdaltool.util.geom.GeoBounds2d;
+import net.daporkchop.gdaltool.util.geom.GeoPoint2d;
+import net.daporkchop.gdaltool.util.geom.Point2d;
+import net.daporkchop.gdaltool.util.geom.Point2l;
 import org.gdal.osr.SpatialReference;
 
 import static java.lang.Math.*;

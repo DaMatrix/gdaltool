@@ -30,10 +30,11 @@ import lombok.ToString;
 import net.daporkchop.gdaltool.Main;
 import net.daporkchop.gdaltool.tilematrix.TileMatrix;
 import net.daporkchop.gdaltool.tilematrix.WebMercatorTileMatrix;
-import net.daporkchop.gdaltool.util.Bounds2d;
-import net.daporkchop.gdaltool.util.Bounds2l;
-import net.daporkchop.gdaltool.util.Point2l;
+import net.daporkchop.gdaltool.util.ProgressMonitor;
 import net.daporkchop.gdaltool.util.Resampling;
+import net.daporkchop.gdaltool.util.geom.Bounds2d;
+import net.daporkchop.gdaltool.util.geom.Bounds2l;
+import net.daporkchop.gdaltool.util.geom.Point2l;
 import org.gdal.gdal.Band;
 import org.gdal.gdal.Dataset;
 import org.gdal.gdal.Driver;
@@ -339,10 +340,14 @@ public class Gdal2Tiles {
     }
 
     public void run() {
-        this.getTilePositionsDetail(this.maxZoom).parallel().forEach(this::createBaseTile);
+        {
+            ProgressMonitor monitor = new ProgressMonitor(this.getTilePositions(this.maxZoom).parallel().count());
+            this.getTilePositionsDetail(this.maxZoom).parallel().peek(this::createBaseTile).forEach(t -> monitor.step());
+        }
 
+        ProgressMonitor monitor = new ProgressMonitor(IntStream.rangeClosed(this.minZoom, this.maxZoom - 1).boxed().flatMap(this::getTilePositions).parallel().count());
         for (int zoom = this.maxZoom - 1; zoom >= this.minZoom; zoom--) {
-            this.getTilePositions(zoom).parallel().forEach(this::createOverviewTile);
+            this.getTilePositions(zoom).parallel().peek(this::createOverviewTile).forEach(pos -> monitor.step());
         }
     }
 
