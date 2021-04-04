@@ -27,13 +27,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.SneakyThrows;
 import lombok.ToString;
+import net.daporkchop.gdaltool.Main;
 import net.daporkchop.gdaltool.tilematrix.TileMatrix;
 import net.daporkchop.gdaltool.tilematrix.WebMercatorTileMatrix;
 import net.daporkchop.gdaltool.util.Bounds2d;
 import net.daporkchop.gdaltool.util.Bounds2l;
 import net.daporkchop.gdaltool.util.Point2l;
 import net.daporkchop.gdaltool.util.Resampling;
-import net.daporkchop.lib.unsafe.PUnsafe;
 import org.gdal.gdal.Band;
 import org.gdal.gdal.Dataset;
 import org.gdal.gdal.Driver;
@@ -44,6 +44,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
@@ -59,6 +60,16 @@ import static org.gdal.osr.osr.*;
  */
 @Setter
 public class Gdal2Tiles {
+    static {
+        Main.init();
+    }
+
+    public static void main(@NonNull String[] args) {
+        checkArg(args.length == 2, "usage: gdal2tiles <input_dataset> <output_directory>");
+
+        new Gdal2Tiles(Paths.get(args[0]), Paths.get(args[1]), new Options()).run();
+    }
+
     protected static GeoQuery geoQuery(@NonNull double[] gt, int rasterX, int rasterY, int querySize, double ulx, double uly, double lrx, double lry) {
         int rx = (int) ((ulx - gt[0]) / gt[1] + 0.001d);
         int ry = (int) ((uly - gt[3]) / gt[5] + 0.001d);
@@ -262,7 +273,7 @@ public class Gdal2Tiles {
 
         tile.SetProjection(this.out_srsWkt);
         Bounds2d b = this.tileMatrix.tileBounds(new Point2l(t.tx, t.ty), t.tz);
-        tile.SetGeoTransform(new double[] {
+        tile.SetGeoTransform(new double[]{
                 b.minX(), (b.maxX() - b.minX()) / this.tileSize, 0.0d,
                 b.minY(), 0.0d, -(b.maxY() - b.minY()) / this.tileSize
         });
@@ -314,7 +325,7 @@ public class Gdal2Tiles {
 
             tile.SetProjection(this.out_srsWkt);
             Bounds2d b = this.tileMatrix.tileBounds(new Point2l(pos.tx, pos.ty), pos.tz);
-            tile.SetGeoTransform(new double[] {
+            tile.SetGeoTransform(new double[]{
                     b.minX(), (b.maxX() - b.minX()) / this.tileSize, 0.0d,
                     b.minY(), 0.0d, -(b.maxY() - b.minY()) / this.tileSize
             });

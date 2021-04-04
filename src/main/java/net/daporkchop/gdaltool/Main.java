@@ -23,17 +23,34 @@ package net.daporkchop.gdaltool;
 import net.daporkchop.gdaltool.mode.Gdal2Tiles;
 import org.gdal.gdal.gdal;
 
-import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Consumer;
+
+import static net.daporkchop.lib.common.util.PValidation.*;
 
 public class Main {
-    public static void main(String... args) {
+    private static final Map<String, Consumer<String[]>> MODES = new HashMap<>();
+
+    static {
         gdal.AllRegister();
 
-        //new Gdal2Tiles().src(Paths.get("/home/daporkchop/Pictures/pepsilogo.png")).run();
-        new Gdal2Tiles(
-                //Paths.get("/media/daporkchop/2tb/si.vrt"), Paths.get("/media/daporkchop/2tb/si-tiles/"),
-                Paths.get("/media/daporkchop/2tb/bepis.tiff"), Paths.get("/media/daporkchop/2tb/bepis-tiles/"),
-                new Gdal2Tiles.Options()
-        ).run();
+        MODES.put("gdal2tiles", Gdal2Tiles::main);
+    }
+
+    /**
+     * Dummy method to force class initialization
+     */
+    public static void init() {
+    }
+
+    public static void main(String... args) {
+        checkArg(args.length >= 1, "usage: gdaltool <mode name> [arguments]...");
+
+        Consumer<String[]> mode = MODES.get(args[0]);
+        checkArg(mode != null, "unknown mode: %s", args[0]);
+
+        mode.accept(Arrays.copyOfRange(args, 1, args.length));
     }
 }
