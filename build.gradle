@@ -83,6 +83,6 @@ jar {
     manifest {
         attributes "Implementation-Title": "DaPorkchop_",
                 "Implementation-Version": version,
-                "Main-Class": "net.daporkchop.template.Main"
+                "Main-Class": "net.daporkchop.gdaltool.Main"
     }
 }
