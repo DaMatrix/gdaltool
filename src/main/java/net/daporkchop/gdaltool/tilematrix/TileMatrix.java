@@ -34,21 +34,6 @@ public interface TileMatrix {
     int MAX_ZOOM_LEVEL = 32;
 
     /**
-     * @return the size of a tile, in pixels
-     */
-    int tileSize();
-
-    /**
-     * Converts given lat/lon in WGS84 Datum to XY in Spherical Mercator EPSG:3857
-     */
-    double[] latLonToMeters(double lat, double lon);
-
-    /**
-     * Converts XY point from Spherical Mercator EPSG:3857 to lat/lon in WGS84 Datum
-     */
-    GeoPoint2d metersToLatLon(@NonNull Point2d m);
-
-    /**
      * Converts pixel coordinates in given zoom level of pyramid to EPSG:3857
      */
     double[] pixelsToMeters(double px, double py, int zoom);
@@ -64,11 +49,6 @@ public interface TileMatrix {
     Point2l pixelsToTile(@NonNull Point2d p);
 
     /**
-     * Move the origin of pixel coordinates to top-left corner
-     */
-    double[] pixelsToRaster(double px, double py, int zoom);
-
-    /**
      * Returns tile for given mercator coordinates
      */
     Point2l metersToTile(@NonNull Point2d m, int zoom);
@@ -77,11 +57,6 @@ public interface TileMatrix {
      * Returns bounds of the given tile in EPSG:3857 coordinates
      */
     Bounds2d tileBounds(@NonNull Point2l t, int zoom);
-
-    /**
-     * Returns bounds of the given tile in latitude/longitude using WGS84 datum
-     */
-    GeoBounds2d tileLatLonBounds(@NonNull Point2l t, int zoom);
 
     /**
      * Resolution (meters/pixel) for given zoom level (measured at Equator)

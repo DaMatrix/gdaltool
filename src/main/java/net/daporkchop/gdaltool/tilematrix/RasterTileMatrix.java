@@ -22,6 +22,7 @@ package net.daporkchop.gdaltool.tilematrix;
 
 import lombok.Getter;
 import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
 import net.daporkchop.gdaltool.util.geom.Bounds2d;
 import net.daporkchop.gdaltool.util.geom.GeoBounds2d;
 import net.daporkchop.gdaltool.util.geom.GeoPoint2d;
@@ -35,33 +36,25 @@ import static net.daporkchop.lib.common.math.PMath.*;
 /**
  * @author DaPorkchop_
  */
+@RequiredArgsConstructor
 @Getter
-public class WebMercatorTileMatrix implements TileMatrix {
+public class RasterTileMatrix implements TileMatrix {
     protected final int tileSize;
-    protected final double initialResolution;
-    protected final double originShift;
-
-    public WebMercatorTileMatrix(@NonNull SpatialReference srs, int tileSize) {
-        this.tileSize = tileSize;
-
-        double semiMajor = srs.GetSemiMajor();
-        this.initialResolution = 2.0d * PI * semiMajor / this.tileSize;
-        this.originShift = 2.0d * PI * semiMajor / 2.0d;
-    }
+    protected final int baseZoom;
 
     @Override
     public double[] pixelsToMeters(double px, double py, int zoom) {
         double res = this.resolution(zoom);
-        double mx = px * res - this.originShift;
-        double my = py * res - this.originShift;
+        double mx = px * res;
+        double my = py * res;
         return new double[]{ mx, my };
     }
 
     @Override
     public Point2d metersToPixels(@NonNull Point2d m, int zoom) {
         double res = this.resolution(zoom);
-        double px = (m.x() + this.originShift) / res;
-        double py = (m.y() + this.originShift) / res;
+        double px = (m.x()) / res;
+        double py = (m.y()) / res;
         return new Point2d(px, py);
     }
 
@@ -86,6 +79,6 @@ public class WebMercatorTileMatrix implements TileMatrix {
 
     @Override
     public double resolution(int zoom) {
-        return this.initialResolution / (1L << zoom);
+        return ((double) (1L << this.baseZoom)) / (1L << zoom);
     }
 }

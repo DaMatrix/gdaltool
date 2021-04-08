@@ -28,12 +28,14 @@ import lombok.Setter;
 import lombok.SneakyThrows;
 import lombok.ToString;
 import net.daporkchop.gdaltool.Main;
+import net.daporkchop.gdaltool.tilematrix.RasterTileMatrix;
 import net.daporkchop.gdaltool.tilematrix.TileMatrix;
 import net.daporkchop.gdaltool.tilematrix.WebMercatorTileMatrix;
 import net.daporkchop.gdaltool.util.ProgressMonitor;
 import net.daporkchop.gdaltool.util.Resampling;
 import net.daporkchop.gdaltool.util.geom.Bounds2d;
 import net.daporkchop.gdaltool.util.geom.Bounds2l;
+import net.daporkchop.gdaltool.util.geom.Point2d;
 import net.daporkchop.gdaltool.util.geom.Point2l;
 import org.gdal.gdal.Band;
 import org.gdal.gdal.Dataset;
@@ -52,6 +54,7 @@ import java.util.stream.Stream;
 
 import static java.lang.Math.*;
 import static net.daporkchop.gdaltool.util.GdalHelper.*;
+import static net.daporkchop.lib.common.math.PMath.*;
 import static net.daporkchop.lib.common.util.PValidation.*;
 import static org.gdal.gdalconst.gdalconst.*;
 import static org.gdal.osr.osr.*;
@@ -148,7 +151,7 @@ public class Gdal2Tiles {
         this.profile = options.profile();
         this.xyz = options.xyz();
 
-        checkState(System.getenv("GDAL_RASTERIO_RESAMPLING").equals(options.resampling().name().toUpperCase()),
+        checkState(options.resampling().name().toUpperCase().equals(System.getenv("GDAL_RASTERIO_RESAMPLING")),
                 "must set environment variable GDAL_RASTERIO_RESAMPLING=%s", options.resampling().name().toUpperCase());
 
         this.outDrv = getDriverByName(options.tileDriver());
@@ -182,6 +185,7 @@ public class Gdal2Tiles {
         }
 
         this.out_srs = this.profile.getSrsForInput(this.inputDataset, this.in_srs);
+        this.out_srs.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
         this.out_srsWkt = this.out_srs.ExportToWkt();
 
         Dataset warpedInputDataset = this.inputDataset;
@@ -253,7 +257,10 @@ public class Gdal2Tiles {
             Path tileFile = this.tileFile(zoom, pos.tx, pos.ty);
             Bounds2d b = this.tileMatrix.tileBounds(new Point2l(pos.tx, pos.ty), zoom);
 
-            GeoQuery q = geoQuery(this.out_gt, this.out_rasterXSize, this.out_rasterYSize, this.tileSize, b.minX(), b.maxY(), b.maxX(), b.minY());
+            double[] gt = this.profile != CuttingProfile.RASTER
+                    ? this.out_gt
+                    : new double[]{ 0, 1, 0, this.out_rasterYSize, 0, -1 };
+            GeoQuery q = geoQuery(gt, this.out_rasterXSize, this.out_rasterYSize, this.tileSize, b.minX(), b.maxY(), b.maxX(), b.minY());
             return new TileDetail(pos.tx, pos.ty, zoom, q.rx, q.ry, q.rxSize, q.rySize, q.wx, q.wy, q.wxSize, q.wySize, tileFile);
         });
     }
@@ -352,7 +359,7 @@ public class Gdal2Tiles {
     }
 
     protected Path tileFile(int zoom, long tx, long ty) {
-        if (this.xyz) {
+        if (this.xyz) { //TODO: this needs to be flipped twice if xyz AND raster
             ty = ((1L << zoom) - 1L) - ty;
         }
         return this.outputFolder.resolve(String.valueOf(zoom)).resolve(String.valueOf(tx)).resolve(ty + "." + this.outExt);
@@ -376,7 +383,6 @@ public class Gdal2Tiles {
 
                 SpatialReference t_srs = new SpatialReference();
                 t_srs.ImportFromEPSG(3857);
-                t_srs.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
                 return t_srs;
             }
 
@@ -398,12 +404,29 @@ public class Gdal2Tiles {
         RASTER {
             @Override
             public SpatialReference getSrsForInput(@NonNull Dataset inputDataset, SpatialReference s_srs) {
-                return s_srs;
+                return s_srs.Clone();
             }
 
             @Override
             public ProjectionData getProjectionData(int tileSize, @NonNull SpatialReference s_srs, @NonNull SpatialReference t_srs, @NonNull Dataset inputDataset, @NonNull Dataset warpedInputDataset, @NonNull Bounds2d out_bounds) {
-                throw new UnsupportedOperationException();
+                ProjectionData data = new ProjectionData();
+
+                double log2 = log10(2.0d);
+                int nativeZoom = max(0, ceilI(max(
+                        log10(warpedInputDataset.GetRasterXSize() / (double) tileSize) / log2,
+                        log10(warpedInputDataset.GetRasterYSize() / (double) tileSize) / log2)));
+                data.defaultMaxZoom = nativeZoom;
+
+                data.tileMatrix = new RasterTileMatrix(tileSize, nativeZoom);
+                data.tMinMax = IntStream.range(0, TileMatrix.MAX_ZOOM_LEVEL)
+                        .mapToObj(zoom -> {
+                            Point2l tmin = data.tileMatrix.metersToTile(new Point2d(0.0d, 0.0d), zoom);
+                            Point2l tmax = data.tileMatrix.metersToTile(new Point2d(warpedInputDataset.getRasterXSize(), warpedInputDataset.GetRasterYSize()), zoom);
+                            return new Bounds2l(max(0L, tmin.x()), min((1L << zoom) - 1L, tmax.x()), max(0L, tmin.y()), min((1L << zoom) - 1L, tmax.y()));
+                        })
+                        .toArray(Bounds2l[]::new);
+
+                return data;
             }
         };
 
@@ -471,12 +494,12 @@ public class Gdal2Tiles {
         protected String tileExt = "tiff";
 
         @NonNull
-        protected Resampling resampling = Resampling.Average;
+        protected Resampling resampling = Resampling.valueOf(System.getProperty("resampling", Resampling.Average.name()));
 
         protected String s_srs = null;
 
         @NonNull
-        protected CuttingProfile profile = CuttingProfile.MERCATOR;
+        protected CuttingProfile profile = CuttingProfile.valueOf(System.getProperty("cutting", CuttingProfile.MERCATOR.name()));
 
         protected boolean xyz = true;
     }
