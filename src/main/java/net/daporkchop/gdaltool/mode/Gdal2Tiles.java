@@ -30,6 +30,7 @@ import lombok.ToString;
 import net.daporkchop.gdaltool.Main;
 import net.daporkchop.gdaltool.tilematrix.RasterTileMatrix;
 import net.daporkchop.gdaltool.tilematrix.TileMatrix;
+import net.daporkchop.gdaltool.tilematrix.WGS84TileMatrix;
 import net.daporkchop.gdaltool.tilematrix.WebMercatorTileMatrix;
 import net.daporkchop.gdaltool.util.ProgressMonitor;
 import net.daporkchop.gdaltool.util.Resampling;
@@ -48,6 +49,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Objects;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
@@ -257,12 +259,21 @@ public class Gdal2Tiles {
             Path tileFile = this.tileFile(zoom, pos.tx, pos.ty);
             Bounds2d b = this.tileMatrix.tileBounds(new Point2l(pos.tx, pos.ty), zoom);
 
-            double[] gt = this.profile != CuttingProfile.RASTER
-                    ? this.out_gt
-                    : new double[]{ 0, 1, 0, this.out_rasterYSize, 0, -1 };
-            GeoQuery q = geoQuery(gt, this.out_rasterXSize, this.out_rasterYSize, this.tileSize, b.minX(), b.maxY(), b.maxX(), b.minY());
+            GeoQuery q;
+            if (this.profile != CuttingProfile.RASTER) {
+                q = geoQuery(this.out_gt, this.out_rasterXSize, this.out_rasterYSize, this.tileSize, b.minX(), b.maxY(), b.maxX(), b.minY());
+            } else {
+                int x = (int) pos.tx * this.tileSize;
+                int y = (int) pos.ty * this.tileSize;
+                if (x >= this.out_rasterXSize || y >= this.out_rasterYSize) {
+                    return null;
+                }
+                int sizeX = min(this.tileSize, this.out_rasterXSize - x);
+                int sizeY = min(this.tileSize, this.out_rasterYSize - y);
+                q = new GeoQuery(x, y, sizeX, sizeY, 0, 0, sizeX, sizeY);
+            }
             return new TileDetail(pos.tx, pos.ty, zoom, q.rx, q.ry, q.rxSize, q.rySize, q.wx, q.wy, q.wxSize, q.wySize, tileFile);
-        });
+        }).filter(Objects::nonNull);
     }
 
     @SneakyThrows(IOException.class)
@@ -280,11 +291,7 @@ public class Gdal2Tiles {
         }
 
         tile.SetProjection(this.out_srsWkt);
-        Bounds2d b = this.tileMatrix.tileBounds(new Point2l(t.tx, t.ty), t.tz);
-        tile.SetGeoTransform(new double[]{
-                b.minX(), (b.maxX() - b.minX()) / this.tileSize, 0.0d,
-                b.minY(), 0.0d, -(b.maxY() - b.minY()) / this.tileSize
-        });
+        tile.SetGeoTransform(this.tileMatrix.tileGeotransform(new Point2l(t.tx, t.ty), t.tz));
 
         Files.createDirectories(t.tileFile.getParent());
         this.outDrv.CreateCopy(t.tileFile.toString(), tile, 0).delete();
@@ -332,11 +339,7 @@ public class Gdal2Tiles {
             }
 
             tile.SetProjection(this.out_srsWkt);
-            Bounds2d b = this.tileMatrix.tileBounds(new Point2l(pos.tx, pos.ty), pos.tz);
-            tile.SetGeoTransform(new double[]{
-                    b.minX(), (b.maxX() - b.minX()) / this.tileSize, 0.0d,
-                    b.minY(), 0.0d, -(b.maxY() - b.minY()) / this.tileSize
-            });
+            tile.SetGeoTransform(this.tileMatrix.tileGeotransform(new Point2l(pos.tx, pos.ty), pos.tz));
 
             Files.createDirectories(tileFile.getParent());
             this.outDrv.CreateCopy(tileFile.toString(), tile, 0).delete();
@@ -347,11 +350,13 @@ public class Gdal2Tiles {
     }
 
     public void run() {
+        System.out.println("Pass 1/2...");
         {
             ProgressMonitor monitor = new ProgressMonitor(this.getTilePositions(this.maxZoom).parallel().count());
             this.getTilePositionsDetail(this.maxZoom).parallel().peek(this::createBaseTile).forEach(t -> monitor.step());
         }
 
+        System.out.println("Pass 2/2...");
         ProgressMonitor monitor = new ProgressMonitor(IntStream.rangeClosed(this.minZoom, this.maxZoom - 1).boxed().flatMap(this::getTilePositions).parallel().count());
         for (int zoom = this.maxZoom - 1; zoom >= this.minZoom; zoom--) {
             this.getTilePositions(zoom).parallel().peek(this::createOverviewTile).forEach(pos -> monitor.step());
@@ -401,6 +406,29 @@ public class Gdal2Tiles {
                 return data;
             }
         },
+        WGS84 {
+            @Override
+            public SpatialReference getSrsForInput(@NonNull Dataset inputDataset, SpatialReference s_srs) {
+                SpatialReference t_srs = new SpatialReference();
+                t_srs.ImportFromEPSG(4326);
+                return t_srs;
+            }
+
+            @Override
+            public ProjectionData getProjectionData(int tileSize, @NonNull SpatialReference s_srs, @NonNull SpatialReference t_srs, @NonNull Dataset inputDataset, @NonNull Dataset warpedInputDataset, @NonNull Bounds2d out_bounds) {
+                ProjectionData data = new ProjectionData();
+                data.tileMatrix = new WGS84TileMatrix(t_srs, tileSize);
+                data.tMinMax = IntStream.range(0, TileMatrix.MAX_ZOOM_LEVEL)
+                        .mapToObj(zoom -> {
+                            Point2l tmin = data.tileMatrix.metersToTile(out_bounds.min(), zoom);
+                            Point2l tmax = data.tileMatrix.metersToTile(out_bounds.max(), zoom);
+                            return new Bounds2l(max(0L, tmin.x()), min((1L << zoom) - 1L, tmax.x()), max(0L, tmin.y()), min((1L << zoom) - 1L, tmax.y()));
+                        })
+                        .toArray(Bounds2l[]::new);
+                data.defaultMaxZoom = data.tileMatrix.zoomForPixelSize(warpedInputDataset.GetGeoTransform()[1]);
+                return data;
+            }
+        },
         RASTER {
             @Override
             public SpatialReference getSrsForInput(@NonNull Dataset inputDataset, SpatialReference s_srs) {
@@ -417,12 +445,13 @@ public class Gdal2Tiles {
                         log10(warpedInputDataset.GetRasterYSize() / (double) tileSize) / log2)));
                 data.defaultMaxZoom = nativeZoom;
 
-                data.tileMatrix = new RasterTileMatrix(tileSize, nativeZoom);
+                data.tileMatrix = new RasterTileMatrix(tileSize, tileSize << nativeZoom, warpedInputDataset.GetGeoTransform());
                 data.tMinMax = IntStream.range(0, TileMatrix.MAX_ZOOM_LEVEL)
                         .mapToObj(zoom -> {
                             Point2l tmin = data.tileMatrix.metersToTile(new Point2d(0.0d, 0.0d), zoom);
-                            Point2l tmax = data.tileMatrix.metersToTile(new Point2d(warpedInputDataset.getRasterXSize(), warpedInputDataset.GetRasterYSize()), zoom);
-                            return new Bounds2l(max(0L, tmin.x()), min((1L << zoom) - 1L, tmax.x()), max(0L, tmin.y()), min((1L << zoom) - 1L, tmax.y()));
+                            Point2l tmax = data.tileMatrix.metersToTile(new Point2d(warpedInputDataset.GetRasterXSize(), warpedInputDataset.GetRasterYSize()), zoom);
+                            //return new Bounds2l(max(0L, tmin.x()), min((1L << zoom) - 1L, tmax.x()), max(0L, tmin.y()), min((1L << zoom) - 1L, tmax.y()));
+                            return new Bounds2l(min(tmin.x(), tmax.x()), max(tmin.x(), tmax.x()), min(tmin.y(), tmax.y()), max(tmin.y(), tmax.y()));
                         })
                         .toArray(Bounds2l[]::new);
 
@@ -501,6 +530,6 @@ public class Gdal2Tiles {
         @NonNull
         protected CuttingProfile profile = CuttingProfile.valueOf(System.getProperty("cutting", CuttingProfile.MERCATOR.name()));
 
-        protected boolean xyz = true;
+        protected boolean xyz = Boolean.parseBoolean(System.getProperty("xyz", ((Boolean) (this.profile != CuttingProfile.RASTER)).toString()));
     }
 }

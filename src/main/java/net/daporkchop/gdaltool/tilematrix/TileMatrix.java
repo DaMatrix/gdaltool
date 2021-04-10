@@ -22,8 +22,6 @@ package net.daporkchop.gdaltool.tilematrix;
 
 import lombok.NonNull;
 import net.daporkchop.gdaltool.util.geom.Bounds2d;
-import net.daporkchop.gdaltool.util.geom.GeoBounds2d;
-import net.daporkchop.gdaltool.util.geom.GeoPoint2d;
 import net.daporkchop.gdaltool.util.geom.Point2d;
 import net.daporkchop.gdaltool.util.geom.Point2l;
 
@@ -32,6 +30,8 @@ import net.daporkchop.gdaltool.util.geom.Point2l;
  */
 public interface TileMatrix {
     int MAX_ZOOM_LEVEL = 32;
+
+    int tileSize();
 
     /**
      * Converts pixel coordinates in given zoom level of pyramid to EPSG:3857
@@ -57,6 +57,14 @@ public interface TileMatrix {
      * Returns bounds of the given tile in EPSG:3857 coordinates
      */
     Bounds2d tileBounds(@NonNull Point2l t, int zoom);
+
+    default double[] tileGeotransform(@NonNull Point2l t, int zoom) {
+        Bounds2d b = this.tileBounds(t, zoom);
+        return new double[]{
+                b.minX(), (b.maxX() - b.minX()) / this.tileSize(), 0.0d,
+                b.minY(), 0.0d, -(b.maxY() - b.minY()) / this.tileSize()
+        };
+    }
 
     /**
      * Resolution (meters/pixel) for given zoom level (measured at Equator)

@@ -25,26 +25,25 @@ import lombok.NonNull;
 import net.daporkchop.gdaltool.util.geom.Bounds2d;
 import net.daporkchop.gdaltool.util.geom.Point2d;
 import net.daporkchop.gdaltool.util.geom.Point2l;
+import org.gdal.osr.SpatialReference;
 
+import static java.lang.Math.*;
 import static net.daporkchop.lib.common.math.PMath.*;
 
 /**
  * @author DaPorkchop_
  */
 @Getter
-public class RasterTileMatrix implements TileMatrix {
+public class WGS84TileMatrix implements TileMatrix {
     protected final int tileSize;
     protected final double initialResolution;
     protected final double originShift;
 
-    protected final double[] gt;
-
-    public RasterTileMatrix(int tileSize, double scale, @NonNull double[] gt) {
+    public WGS84TileMatrix(@NonNull SpatialReference srs, int tileSize) {
         this.tileSize = tileSize;
 
-        this.initialResolution = scale / this.tileSize;
-        this.originShift = 0.0d;
-        this.gt = gt;
+        this.initialResolution = 360.0d / this.tileSize;
+        this.originShift = 360.0d / 2.0d;
     }
 
     @Override
@@ -80,18 +79,6 @@ public class RasterTileMatrix implements TileMatrix {
         double[] min = this.pixelsToMeters(t.x() * this.tileSize, t.y() * this.tileSize, zoom);
         double[] max = this.pixelsToMeters((t.x() + 1L) * this.tileSize, (t.y() + 1L) * this.tileSize, zoom);
         return new Bounds2d(min[0], max[0], min[1], max[1]);
-    }
-
-    @Override
-    public double[] tileGeotransform(@NonNull Point2l t, int zoom) {
-        double[] min = this.pixelsToMeters(t.x() * this.tileSize, t.y() * this.tileSize, zoom);
-        double[] max = this.pixelsToMeters((t.x() + 1L) * this.tileSize, (t.y() + 1L) * this.tileSize, zoom);
-        return new double[]{
-                this.gt[0] + min[0] * this.gt[1],
-                (max[0] - min[0]) * this.gt[1] / this.tileSize, 0,
-                this.gt[3] + min[1] * this.gt[5],
-                0, (max[1] - min[1]) * this.gt[5] / this.tileSize
-        };
     }
 
     @Override
