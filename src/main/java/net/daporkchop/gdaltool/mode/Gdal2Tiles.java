@@ -38,6 +38,7 @@ import net.daporkchop.gdaltool.util.geom.Bounds2d;
 import net.daporkchop.gdaltool.util.geom.Bounds2l;
 import net.daporkchop.gdaltool.util.geom.Point2d;
 import net.daporkchop.gdaltool.util.geom.Point2l;
+import net.daporkchop.lib.unsafe.PUnsafe;
 import org.gdal.gdal.Band;
 import org.gdal.gdal.Dataset;
 import org.gdal.gdal.Driver;
@@ -117,6 +118,7 @@ public class Gdal2Tiles {
     protected final Dataset inputDataset;
     protected final ThreadLocal<Dataset> tlWarpedInputDataset;
     protected final ThreadLocal<ByteBuffer> tlBuffer;
+    protected final ByteBuffer emptyTileBuffer;
     protected final int input_bands;
     protected final int input_dataType;
     protected final int[] allBands;
@@ -225,6 +227,11 @@ public class Gdal2Tiles {
 
         this.minZoom = minZoom;
         this.maxZoom = maxZoom;
+
+        this.emptyTileBuffer = ByteBuffer.allocateDirect(this.tlBuffer.get().capacity());
+        Dataset ds = this.createMemTile(this.tileSize);
+        ds.ReadRaster_Direct(0, 0, this.tileSize, this.tileSize, this.tileSize, this.tileSize, this.input_dataType, this.emptyTileBuffer, this.allBands);
+        ds.delete();
     }
 
     protected Dataset createMemTile(int size) {
@@ -276,27 +283,43 @@ public class Gdal2Tiles {
         }).filter(Objects::nonNull);
     }
 
+    protected boolean isEmpty(@NonNull ByteBuffer buffer) {
+        checkState(buffer.capacity() == this.emptyTileBuffer.capacity());
+
+        for (int i = 0; i < buffer.capacity(); i++) {
+            if (buffer.get(i) != this.emptyTileBuffer.get(i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     @SneakyThrows(IOException.class)
     protected void createBaseTile(@NonNull TileDetail t) {
-        Dataset tile = this.createMemTile(this.tileSize);
+        Dataset tile = null;
         Dataset input = this.tlWarpedInputDataset.get();
 
         ByteBuffer buffer = this.tlBuffer.get();
 
         if (t.rxSize != 0 && t.rySize != 0 && t.wxSize != 0 && t.wySize != 0) {
+            PUnsafe.copyMemory(PUnsafe.pork_directBufferAddress(this.emptyTileBuffer), PUnsafe.pork_directBufferAddress(buffer), buffer.capacity());
             int r = input.ReadRaster_Direct(t.rx, t.ry, t.rxSize, t.rySize, t.wxSize, t.wySize, this.input_dataType, buffer, this.allBands);
-            if (r == CE_None) {
+
+            if (r == CE_None && !this.isEmpty(buffer)) {
+                tile = this.createMemTile(this.tileSize);
                 tile.WriteRaster_Direct(t.wx, t.wy, t.wxSize, t.wySize, t.wxSize, t.wySize, this.input_dataType, buffer, this.allBands);
             }
         }
 
-        tile.SetProjection(this.out_srsWkt);
-        tile.SetGeoTransform(this.tileMatrix.tileGeotransform(new Point2l(t.tx, t.ty), t.tz));
+        if (tile != null) {
+            tile.SetProjection(this.out_srsWkt);
+            tile.SetGeoTransform(this.tileMatrix.tileGeotransform(new Point2l(t.tx, t.ty), t.tz));
 
-        Files.createDirectories(t.tileFile.getParent());
-        this.outDrv.CreateCopy(t.tileFile.toString(), tile, 0).delete();
+            Files.createDirectories(t.tileFile.getParent());
+            this.outDrv.CreateCopy(t.tileFile.toString(), tile, 0).delete();
 
-        tile.delete();
+            tile.delete();
+        }
     }
 
     @SneakyThrows(IOException.class)
@@ -523,7 +546,7 @@ public class Gdal2Tiles {
         protected String tileExt = "tiff";
 
         @NonNull
-        protected Resampling resampling = Resampling.valueOf(System.getProperty("resampling", Resampling.Average.name()));
+        protected Resampling resampling = Resampling.valueOf(System.getProperty("resampling", Resampling.CubicSpline.name()));
 
         protected String s_srs = null;
 
