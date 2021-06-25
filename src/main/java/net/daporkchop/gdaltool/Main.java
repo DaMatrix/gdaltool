@@ -20,6 +20,7 @@
 
 package net.daporkchop.gdaltool;
 
+import net.daporkchop.gdaltool.mode.Bounds;
 import net.daporkchop.gdaltool.mode.Gdal2Tiles;
 import org.gdal.gdal.gdal;
 
@@ -36,6 +37,7 @@ public class Main {
     static {
         gdal.AllRegister();
 
+        MODES.put("bounds", Bounds::main);
         MODES.put("gdal2tiles", Gdal2Tiles::main);
     }
 

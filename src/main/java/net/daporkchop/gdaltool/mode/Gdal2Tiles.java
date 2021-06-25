@@ -194,7 +194,7 @@ public class Gdal2Tiles {
 
         Dataset warpedInputDataset = this.inputDataset;
         if (this.profile != CuttingProfile.RASTER) {
-            if (!this.in_srs.ExportToProj4().equals(this.out_srs.ExportToProj4()) || this.inputDataset.GetGCPCount() != 0) {
+            if (!this.in_srs.ExportToWkt().equals(this.out_srs.ExportToWkt()) || this.inputDataset.GetGCPCount() != 0) {
                 warpedInputDataset = gdal.AutoCreateWarpedVRT(this.inputDataset, this.in_srs.ExportToWkt(), this.out_srs.ExportToWkt(), this.resampling.gdal());
             }
         }
