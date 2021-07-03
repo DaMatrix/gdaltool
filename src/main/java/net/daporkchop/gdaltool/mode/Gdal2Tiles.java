@@ -50,7 +50,9 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.Objects;
+import java.util.Vector;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
@@ -144,6 +146,7 @@ public class Gdal2Tiles {
     protected final int out_rasterXSize;
     protected final int out_rasterYSize;
     protected final Bounds2d out_bounds;
+    protected final Vector<String> out_options;
 
     protected final int tileSize;
     protected final boolean xyz;
@@ -154,6 +157,7 @@ public class Gdal2Tiles {
         this.resampling = options.resampling();
         this.profile = options.profile();
         this.xyz = options.xyz();
+        this.out_options = options.options();
 
         checkState(options.resampling().name().toUpperCase().equals(System.getenv("GDAL_RASTERIO_RESAMPLING")),
                 "must set environment variable GDAL_RASTERIO_RESAMPLING=%s", options.resampling().name().toUpperCase());
@@ -316,7 +320,7 @@ public class Gdal2Tiles {
             tile.SetGeoTransform(this.tileMatrix.tileGeotransform(new Point2l(t.tx, t.ty), t.tz));
 
             Files.createDirectories(t.tileFile.getParent());
-            this.outDrv.CreateCopy(t.tileFile.toString(), tile, 0).delete();
+            this.outDrv.CreateCopy(t.tileFile.toString(), tile, 0, this.out_options).delete();
 
             tile.delete();
         }
@@ -365,7 +369,7 @@ public class Gdal2Tiles {
             tile.SetGeoTransform(this.tileMatrix.tileGeotransform(new Point2l(pos.tx, pos.ty), pos.tz));
 
             Files.createDirectories(tileFile.getParent());
-            this.outDrv.CreateCopy(tileFile.toString(), tile, 0).delete();
+            this.outDrv.CreateCopy(tileFile.toString(), tile, 0, this.out_options).delete();
         }
 
         query.delete();
@@ -535,6 +539,16 @@ public class Gdal2Tiles {
     @ToString
     @EqualsAndHashCode
     public static class Options {
+        protected static Vector<String> parseOptions(String opts) {
+            Vector<String> vector = new Vector<>();
+
+            if (opts != null) {
+                vector.addAll(Arrays.asList(opts.split(",")));
+            }
+
+            return vector;
+        }
+
         protected int tileSize = 256;
 
         protected int minZoom = -1;
@@ -547,6 +561,8 @@ public class Gdal2Tiles {
 
         @NonNull
         protected Resampling resampling = Resampling.valueOf(System.getProperty("resampling", Resampling.CubicSpline.name()));
+
+        protected Vector<String> options = parseOptions(System.getProperty("options"));
 
         protected String s_srs = null;
 
