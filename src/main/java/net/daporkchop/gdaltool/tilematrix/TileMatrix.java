@@ -62,7 +62,7 @@ public interface TileMatrix {
         Bounds2d b = this.tileBounds(t, zoom);
         return new double[]{
                 b.minX(), (b.maxX() - b.minX()) / this.tileSize(), 0.0d,
-                b.minY(), 0.0d, -(b.maxY() - b.minY()) / this.tileSize()
+                b.maxY(), 0.0d, -(b.maxY() - b.minY()) / this.tileSize()
         };
     }
 

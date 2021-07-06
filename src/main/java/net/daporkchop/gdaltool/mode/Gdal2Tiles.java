@@ -53,6 +53,9 @@ import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Vector;
+import java.util.concurrent.ForkJoinTask;
+import java.util.concurrent.RecursiveTask;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
@@ -255,6 +258,11 @@ public class Gdal2Tiles {
         return ds;
     }
 
+    protected boolean isValid(@NonNull TilePos pos) {
+        Bounds2l tBounds = this.tMinMax[pos.tz];
+        return pos.tx >= tBounds.minX() && pos.tx <= tBounds.maxX() && pos.ty >= tBounds.minY() && pos.ty <= tBounds.maxY();
+    }
+
     protected Stream<TilePos> getTilePositions(int zoom) {
         Bounds2l tBounds = this.tMinMax[zoom];
         return LongStream.rangeClosed(tBounds.minY(), tBounds.maxY()).boxed()
@@ -265,26 +273,24 @@ public class Gdal2Tiles {
                 });
     }
 
-    protected Stream<TileDetail> getTilePositionsDetail(int zoom) {
-        return this.getTilePositions(zoom).map(pos -> {
-            Path tileFile = this.tileFile(zoom, pos.tx, pos.ty);
-            Bounds2d b = this.tileMatrix.tileBounds(new Point2l(pos.tx, pos.ty), zoom);
+    protected TileDetail getTileDetail(@NonNull TilePos pos) {
+        Path tileFile = this.tileFile(pos.tz, pos.tx, pos.ty);
+        Bounds2d b = this.tileMatrix.tileBounds(new Point2l(pos.tx, pos.ty), pos.tz);
 
-            GeoQuery q;
-            if (this.profile != CuttingProfile.RASTER) {
-                q = geoQuery(this.out_gt, this.out_rasterXSize, this.out_rasterYSize, this.tileSize, b.minX(), b.maxY(), b.maxX(), b.minY());
-            } else {
-                int x = (int) pos.tx * this.tileSize;
-                int y = (int) pos.ty * this.tileSize;
-                if (x >= this.out_rasterXSize || y >= this.out_rasterYSize) {
-                    return null;
-                }
-                int sizeX = min(this.tileSize, this.out_rasterXSize - x);
-                int sizeY = min(this.tileSize, this.out_rasterYSize - y);
-                q = new GeoQuery(x, y, sizeX, sizeY, 0, 0, sizeX, sizeY);
+        GeoQuery q;
+        if (this.profile != CuttingProfile.RASTER) {
+            q = geoQuery(this.out_gt, this.out_rasterXSize, this.out_rasterYSize, this.tileSize, b.minX(), b.maxY(), b.maxX(), b.minY());
+        } else {
+            int x = (int) pos.tx * this.tileSize;
+            int y = (int) pos.ty * this.tileSize;
+            if (x >= this.out_rasterXSize || y >= this.out_rasterYSize) {
+                return null;
             }
-            return new TileDetail(pos.tx, pos.ty, zoom, q.rx, q.ry, q.rxSize, q.rySize, q.wx, q.wy, q.wxSize, q.wySize, tileFile);
-        }).filter(Objects::nonNull);
+            int sizeX = min(this.tileSize, this.out_rasterXSize - x);
+            int sizeY = min(this.tileSize, this.out_rasterYSize - y);
+            q = new GeoQuery(x, y, sizeX, sizeY, 0, 0, sizeX, sizeY);
+        }
+        return new TileDetail(pos.tx, pos.ty, pos.tz, q.rx, q.ry, q.rxSize, q.rySize, q.wx, q.wy, q.wxSize, q.wySize, tileFile);
     }
 
     protected boolean isEmpty(@NonNull ByteBuffer buffer) {
@@ -299,7 +305,7 @@ public class Gdal2Tiles {
     }
 
     @SneakyThrows(IOException.class)
-    protected void createBaseTile(@NonNull TileDetail t) {
+    protected Dataset createBaseTile(@NonNull TileDetail t) {
         Dataset tile = null;
         Dataset input = this.tlWarpedInputDataset.get();
 
@@ -321,28 +327,26 @@ public class Gdal2Tiles {
 
             Files.createDirectories(t.tileFile.getParent());
             this.outDrv.CreateCopy(t.tileFile.toString(), tile, 0, this.out_options).delete();
-
-            tile.delete();
         }
+
+        return tile;
     }
 
     @SneakyThrows(IOException.class)
-    protected void createOverviewTile(@NonNull TilePos pos) {
+    protected Dataset createOverviewTile(@NonNull TilePos pos, @NonNull Dataset[] srcs) {
         Path tileFile = this.tileFile(pos.tz, pos.tx, pos.ty);
 
         Dataset query = this.createMemTile(this.tileSize << 1);
         Dataset tile = this.createMemTile(this.tileSize);
         ByteBuffer buffer = this.tlBuffer.get();
 
-        int cnt = 0;
+        int cnt = 0, i = 0;
         for (long x = pos.tx * 2L; x < pos.tx * 2L + 2L; x++) {
-            for (long y = pos.ty * 2L; y < pos.ty * 2L + 2L; y++) {
-                Path baseTilePath = this.tileFile(pos.tz + 1, x, y);
-                if (!Files.exists(baseTilePath)) {
+            for (long y = pos.ty * 2L; y < pos.ty * 2L + 2L; y++, i++) {
+                Dataset base = srcs[i];
+                if (base == null) {
                     continue;
                 }
-
-                Dataset base = gdal.Open(baseTilePath.toString(), GA_ReadOnly);
 
                 int tilePosX = toInt((x - pos.tx * 2L) * this.tileSize);
                 int tilePosY = toInt((y - pos.ty * 2L) * this.tileSize);
@@ -355,7 +359,6 @@ public class Gdal2Tiles {
                     query.WriteRaster_Direct(tilePosX, tilePosY, this.tileSize, this.tileSize, this.tileSize, this.tileSize, this.input_dataType, buffer, this.allBands);
                 }
 
-                base.delete();
                 cnt++;
             }
         }
@@ -370,24 +373,61 @@ public class Gdal2Tiles {
 
             Files.createDirectories(tileFile.getParent());
             this.outDrv.CreateCopy(tileFile.toString(), tile, 0, this.out_options).delete();
+        } else {
+            tile.delete();
+            tile = null;
         }
 
         query.delete();
-        tile.delete();
+        return tile;
+    }
+
+    protected ForkJoinTask<Dataset> createTile(@NonNull TilePos pos, @NonNull Runnable callback) {
+        return Gdal2Tiles.this.isValid(pos)
+                ? new RecursiveTask<Dataset>() {
+            @Override
+            protected Dataset compute() {
+                Dataset dataset;
+                if (pos.tz == Gdal2Tiles.this.maxZoom) { //max zoom level - generate the tile from the source dataset
+                    dataset = Gdal2Tiles.this.createBaseTile(Gdal2Tiles.this.getTileDetail(pos));
+                } else { //generate the tile by scaling the 4 children
+                    Dataset[] children = ForkJoinTask.invokeAll(Stream.of(pos.below())
+                            .map(childPos -> Gdal2Tiles.this.createTile(childPos, callback))
+                            .collect(Collectors.toList()))
+                            .stream().map(ForkJoinTask::join).toArray(Dataset[]::new);
+
+                    dataset = Gdal2Tiles.this.createOverviewTile(pos, children);
+
+                    Stream.of(children).filter(Objects::nonNull).forEach(Dataset::delete);
+                }
+
+                callback.run();
+                return dataset;
+            }
+        }
+                : new RecursiveTask<Dataset>() {
+            {
+                this.complete(null);
+            }
+
+            @Override
+            protected Dataset compute() {
+                return null;
+            }
+        };
     }
 
     public void run() {
-        System.out.println("Pass 1/2...");
-        {
-            ProgressMonitor monitor = new ProgressMonitor(this.getTilePositions(this.maxZoom).parallel().count());
-            this.getTilePositionsDetail(this.maxZoom).parallel().peek(this::createBaseTile).forEach(t -> monitor.step());
-        }
+        long count = IntStream.rangeClosed(this.minZoom, this.maxZoom).boxed().flatMap(this::getTilePositions).parallel().count();
+        System.out.printf("rendering %d tiles...\n", count);
+        ProgressMonitor monitor = new ProgressMonitor(count);
 
-        System.out.println("Pass 2/2...");
-        ProgressMonitor monitor = new ProgressMonitor(IntStream.rangeClosed(this.minZoom, this.maxZoom - 1).boxed().flatMap(this::getTilePositions).parallel().count());
-        for (int zoom = this.maxZoom - 1; zoom >= this.minZoom; zoom--) {
-            this.getTilePositions(zoom).parallel().peek(this::createOverviewTile).forEach(pos -> monitor.step());
-        }
+        this.getTilePositions(this.minZoom).parallel()
+                .map(pos -> this.createTile(pos, monitor::step))
+                .peek(ForkJoinTask::fork)
+                .map(ForkJoinTask::join)
+                .filter(Objects::nonNull)
+                .forEach(Dataset::delete);
     }
 
     protected Path tileFile(int zoom, long tx, long ty) {
@@ -532,6 +572,15 @@ public class Gdal2Tiles {
         public final long tx;
         public final long ty;
         public final int tz;
+
+        public TilePos[] below() {
+            return new TilePos[]{
+                    new TilePos((this.tx << 1L) + 0L, (this.ty << 1L) + 0L, this.tz + 1),
+                    new TilePos((this.tx << 1L) + 0L, (this.ty << 1L) + 1L, this.tz + 1),
+                    new TilePos((this.tx << 1L) + 1L, (this.ty << 1L) + 0L, this.tz + 1),
+                    new TilePos((this.tx << 1L) + 1L, (this.ty << 1L) + 1L, this.tz + 1)
+            };
+        }
     }
 
     @Getter
