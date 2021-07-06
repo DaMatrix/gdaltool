@@ -20,39 +20,45 @@
 
 package net.daporkchop.gdaltool.util;
 
+import lombok.RequiredArgsConstructor;
+
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.DoubleStream;
+import java.util.stream.IntStream;
+
 /**
  * @author DaPorkchop_
  */
+@RequiredArgsConstructor
 public class ProgressMonitor {
-    protected static final double STEP = 2.5d;
+    protected static final String CONTROL_SEQUENCE = '\u001B' + "[";
+    protected static final String RESET_LINE = CONTROL_SEQUENCE + "1G" + CONTROL_SEQUENCE + "2K";
 
     protected long done;
-    protected double progress;
     protected final long total;
 
-    public ProgressMonitor(long total) {
-        this.total = total;
-
-        System.out.print(0);
-        System.out.flush();
-    }
+    protected long lastTime;
+    protected long lastDone;
+    protected final double[] speeds = IntStream.range(0, 120).mapToDouble(i -> Double.NaN).toArray();
 
     public synchronized void step() {
         this.done++;
-        double progress = (double) this.done / this.total * 100.0d;
-        if (progress >= this.progress + STEP) {
-            do {
-                this.progress += STEP;
-                if ((long) this.progress % 10L == 0) {
-                    System.out.print((long) this.progress);
-                    if (this.progress == 100.0d) {
-                        System.out.println();
-                    }
-                } else {
-                    System.out.print('.');
-                }
-            }
-            while (progress >= this.progress + STEP);
+
+        long now = System.nanoTime();
+        if (this.lastTime + TimeUnit.SECONDS.toNanos(1L) <= now) {
+            System.arraycopy(this.speeds, 0, this.speeds, 1, this.speeds.length - 1);
+            this.speeds[0] = ((this.done - this.lastDone) * TimeUnit.SECONDS.toNanos(1L)) / (double) (now - this.lastTime);
+            this.lastDone = this.done;
+            this.lastTime = now;
+
+            double speed = DoubleStream.of(this.speeds).filter(d -> !Double.isNaN(d)).average().getAsDouble();
+            Duration eta = Duration.ofSeconds((long) ((this.total - this.done) / speed));
+            System.out.printf(RESET_LINE + "rendered %d/%d tiles (%.2f%%) @ %.2ftiles/s eta %dd %02dh %02dm %02ds",
+                    this.done, this.total,
+                    (double) this.done / this.total * 100.0d,
+                    speed,
+                    eta.toDays(), eta.toHours() - TimeUnit.DAYS.toHours(eta.toDays()), eta.toMinutes() - TimeUnit.HOURS.toMinutes(eta.toHours()), eta.getSeconds() - TimeUnit.MINUTES.toSeconds(eta.toMinutes()));
             System.out.flush();
         }
     }
