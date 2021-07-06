@@ -48,6 +48,7 @@ import org.gdal.osr.SpatialReference;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -156,6 +157,8 @@ public class Gdal2Tiles {
     protected final int tileSize;
     protected final boolean xyz;
 
+    protected final double scale;
+
     @SneakyThrows(IOException.class)
     public Gdal2Tiles(@NonNull Path inputFile, @NonNull Path outputFolder, @NonNull Options options) {
         this.tileSize = options.tileSize();
@@ -163,6 +166,7 @@ public class Gdal2Tiles {
         this.profile = options.profile();
         this.xyz = options.xyz();
         this.out_options = options.options();
+        this.scale = options.scale();
 
         checkState(options.resampling().name().toUpperCase().equals(System.getenv("GDAL_RASTERIO_RESAMPLING")),
                 "must set environment variable GDAL_RASTERIO_RESAMPLING=%s", options.resampling().name().toUpperCase());
@@ -185,7 +189,7 @@ public class Gdal2Tiles {
         this.input_dataType = DataType.byId(this.inputDataset.GetRasterBand(1).GetRasterDataType());
         this.output_dataType = options.dataType() == DataType.Default ? this.input_dataType : options.dataType;
         this.allBands = IntStream.rangeClosed(1, this.input_bands).toArray();
-        this.tlBuffer = ThreadLocal.withInitial(() -> ByteBuffer.allocateDirect(this.tileSize * this.tileSize * this.output_dataType.sizeBytes() * this.input_bands));
+        this.tlBuffer = ThreadLocal.withInitial(() -> ByteBuffer.allocateDirect(this.tileSize * this.tileSize * DataType.Float64.sizeBytes() * this.input_bands).order(ByteOrder.nativeOrder()));
         this.input_noDataValues = getNoDataValues(this.inputDataset);
 
         this.in_srs = setupInputSrs(this.inputDataset, options.s_srs());
@@ -238,9 +242,9 @@ public class Gdal2Tiles {
         this.minZoom = minZoom;
         this.maxZoom = maxZoom;
 
-        this.emptyTileBuffer = ByteBuffer.allocateDirect(this.tlBuffer.get().capacity());
+        this.emptyTileBuffer = ByteBuffer.allocateDirect(this.tlBuffer.get().capacity()).order(ByteOrder.nativeOrder());
         Dataset ds = this.createMemTile(this.tileSize);
-        ds.ReadRaster_Direct(0, 0, this.tileSize, this.tileSize, this.tileSize, this.tileSize, this.output_dataType.gdal(), this.emptyTileBuffer, this.allBands);
+        ds.ReadRaster_Direct(0, 0, this.tileSize, this.tileSize, this.tileSize, this.tileSize, DataType.Float64.gdal(), this.emptyTileBuffer, this.allBands);
         ds.delete();
     }
 
@@ -249,9 +253,11 @@ public class Gdal2Tiles {
 
         for (int b = 1; b <= this.input_bands; b++) {
             Band band = ds.GetRasterBand(b);
+            band.SetScale(1.0d / this.scale);
+
             Double noData = this.input_noDataValues[b - 1];
             if (noData != null) {
-                noData = this.output_dataType.processNodata(noData);
+                noData = this.output_dataType.processNodata(noData * this.scale);
                 band.SetNoDataValue(noData);
                 band.Fill(noData);
             } else {
@@ -260,6 +266,12 @@ public class Gdal2Tiles {
         }
 
         return ds;
+    }
+
+    protected void scaleValues(@NonNull ByteBuffer buffer) {
+        for (int i = 0; i < buffer.capacity(); i += Double.BYTES)  {
+            buffer.putDouble(i, this.output_dataType.processNodata(buffer.getDouble(i) * this.scale));
+        }
     }
 
     protected boolean isValid(@NonNull TilePos pos) {
@@ -300,8 +312,8 @@ public class Gdal2Tiles {
     protected boolean isInputEmpty(@NonNull ByteBuffer buffer) {
         checkState(buffer.capacity() == this.emptyTileBuffer.capacity());
 
-        for (int i = 0; i < buffer.capacity(); i++) {
-            if (buffer.get(i) != this.emptyTileBuffer.get(i)) {
+        for (int i = 0; i < buffer.capacity(); i += Double.BYTES) {
+            if (buffer.getDouble(i) != this.emptyTileBuffer.getDouble(i)) {
                 return false;
             }
         }
@@ -317,11 +329,12 @@ public class Gdal2Tiles {
 
         if (t.rxSize != 0 && t.rySize != 0 && t.wxSize != 0 && t.wySize != 0) {
             PUnsafe.copyMemory(PUnsafe.pork_directBufferAddress(this.emptyTileBuffer), PUnsafe.pork_directBufferAddress(buffer), buffer.capacity());
-            int r = input.ReadRaster_Direct(t.rx, t.ry, t.rxSize, t.rySize, t.wxSize, t.wySize, this.output_dataType.gdal(), buffer, this.allBands);
+            int r = input.ReadRaster_Direct(t.rx, t.ry, t.rxSize, t.rySize, t.wxSize, t.wySize, DataType.Float64.gdal(), buffer, this.allBands);
 
+            this.scaleValues(buffer);
             if (r == CE_None && !this.isInputEmpty(buffer)) {
                 tile = this.createMemTile(this.tileSize);
-                tile.WriteRaster_Direct(t.wx, t.wy, t.wxSize, t.wySize, t.wxSize, t.wySize, this.output_dataType.gdal(), buffer, this.allBands);
+                tile.WriteRaster_Direct(t.wx, t.wy, t.wxSize, t.wySize, t.wxSize, t.wySize, DataType.Float64.gdal(), buffer, this.allBands);
             }
         }
 
@@ -616,6 +629,7 @@ public class Gdal2Tiles {
         protected Resampling resampling = Resampling.valueOf(System.getProperty("resampling", Resampling.CubicSpline.name()));
         @NonNull
         protected DataType dataType = DataType.valueOf(System.getProperty("dataType", DataType.Default.name()));
+        protected double scale = Double.parseDouble(System.getProperty("scale", "1"));
 
         protected Vector<String> options = parseOptions(System.getProperty("options"));
 
