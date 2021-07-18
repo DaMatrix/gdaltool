@@ -35,6 +35,8 @@ public class ProgressMonitor {
     protected static final String CONTROL_SEQUENCE = '\u001B' + "[";
     protected static final String RESET_LINE = CONTROL_SEQUENCE + "1G" + CONTROL_SEQUENCE + "2K";
 
+    protected static final boolean ANSI = "YES".equalsIgnoreCase(System.getenv().getOrDefault("ANSI", "YES"));
+
     protected long done;
     protected final long total;
 
@@ -54,7 +56,10 @@ public class ProgressMonitor {
 
             double speed = DoubleStream.of(this.speeds).filter(d -> !Double.isNaN(d)).average().getAsDouble();
             Duration eta = Duration.ofSeconds((long) ((this.total - this.done) / speed));
-            System.out.printf(RESET_LINE + "rendered %d/%d tiles (%.2f%%) @ %.2ftiles/s eta %dd %02dh %02dm %02ds",
+            System.out.printf(
+                    ANSI
+                            ? RESET_LINE + "rendered %d/%d tiles (%.2f%%) @ %.2ftiles/s eta %dd %02dh %02dm %02ds"
+                            : "rendered %d/%d tiles (%.2f%%) @ %.2ftiles/s eta %dd %02dh %02dm %02ds\n",
                     this.done, this.total,
                     (double) this.done / this.total * 100.0d,
                     speed,

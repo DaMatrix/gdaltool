@@ -339,11 +339,12 @@ public class Gdal2Tiles {
         }
 
         if (tile != null) {
-            tile.SetProjection(this.out_srsWkt);
             tile.SetGeoTransform(this.tileMatrix.tileGeotransform(new Point2l(t.tx, t.ty), t.tz));
 
             Files.createDirectories(t.tileFile.getParent());
-            this.outDrv.CreateCopy(t.tileFile.toString(), tile, 0, this.out_options).delete();
+            Dataset dataset = this.outDrv.CreateCopy(t.tileFile.toString(), tile, 0, this.out_options);
+            dataset.SetSpatialRef(this.out_srs);
+            dataset.delete();
         }
 
         return tile;
@@ -385,11 +386,12 @@ public class Gdal2Tiles {
                 checkState(gdal.RegenerateOverview(query.GetRasterBand(band), tile.GetRasterBand(band), "AVERAGE") == CE_None);
             }
 
-            tile.SetProjection(this.out_srsWkt);
             tile.SetGeoTransform(this.tileMatrix.tileGeotransform(new Point2l(pos.tx, pos.ty), pos.tz));
 
             Files.createDirectories(tileFile.getParent());
-            this.outDrv.CreateCopy(tileFile.toString(), tile, 0, this.out_options).delete();
+            Dataset dataset = this.outDrv.CreateCopy(tileFile.toString(), tile, 0, this.out_options);
+            dataset.SetSpatialRef(this.out_srs);
+            dataset.delete();
         } else {
             tile.delete();
             tile = null;
