@@ -54,6 +54,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Vector;
 import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.RecursiveTask;
@@ -131,6 +132,7 @@ public class Gdal2Tiles {
     protected final DataType output_dataType;
     protected final int[] allBands;
     protected final Double[] input_noDataValues;
+    protected final Double[] output_noDataValues;
 
     protected final Path outputFolder;
     protected final String outExt;
@@ -191,6 +193,8 @@ public class Gdal2Tiles {
         this.allBands = IntStream.rangeClosed(1, this.input_bands).toArray();
         this.tlBuffer = ThreadLocal.withInitial(() -> ByteBuffer.allocateDirect(this.tileSize * this.tileSize * DataType.Float64.sizeBytes() * this.input_bands).order(ByteOrder.nativeOrder()));
         this.input_noDataValues = getNoDataValues(this.inputDataset);
+        this.output_noDataValues = options.a_nodata.orElse(this.input_noDataValues);
+        checkState(this.input_noDataValues.length == this.output_noDataValues.length, "a_nodata must contain %d values, but found %d", this.input_noDataValues.length, this.output_noDataValues.length);
 
         this.in_srs = setupInputSrs(this.inputDataset, options.s_srs());
 
@@ -255,7 +259,7 @@ public class Gdal2Tiles {
             Band band = ds.GetRasterBand(b);
             band.SetScale(1.0d / this.scale);
 
-            Double noData = this.input_noDataValues[b - 1];
+            Double noData = this.output_noDataValues[b - 1];
             if (noData != null) {
                 noData = this.output_dataType.processNodata(noData * this.scale);
                 band.SetNoDataValue(noData);
@@ -447,6 +451,8 @@ public class Gdal2Tiles {
                 .map(ForkJoinTask::join)
                 .filter(Objects::nonNull)
                 .forEach(Dataset::delete);
+
+        System.out.println("done!");
     }
 
     protected Path tileFile(int zoom, long tx, long ty) {
@@ -619,8 +625,11 @@ public class Gdal2Tiles {
 
         protected int tileSize = 256;
 
-        protected int minZoom = -1;
-        protected int maxZoom = -1;
+        protected int minZoom = Integer.parseInt(System.getProperty("minZoom", "-1"));
+        protected int maxZoom = Integer.parseInt(System.getProperty("maxZoom", "-1"));
+
+        protected Optional<Double[]> a_nodata = Optional.ofNullable(System.getProperty("a_nodata"))
+                .map(s -> Stream.of(s.split(",")).map(v -> "none".equalsIgnoreCase(v) || "null".equalsIgnoreCase(v) ? null : Double.parseDouble(v)).toArray(Double[]::new));
 
         @NonNull
         protected String tileDriver = "GTiff";

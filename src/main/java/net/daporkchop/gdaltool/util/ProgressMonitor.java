@@ -27,6 +27,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.DoubleStream;
 import java.util.stream.IntStream;
 
+import static net.daporkchop.lib.common.util.PValidation.*;
+
 /**
  * @author DaPorkchop_
  */
@@ -45,10 +47,11 @@ public class ProgressMonitor {
     protected final double[] speeds = IntStream.range(0, 120).mapToDouble(i -> Double.NaN).toArray();
 
     public synchronized void step() {
+        checkState(this.done < this.total, "already done?!?");
         this.done++;
 
         long now = System.nanoTime();
-        if (this.lastTime + TimeUnit.SECONDS.toNanos(1L) <= now) {
+        if (this.done == this.total || this.lastTime + TimeUnit.SECONDS.toNanos(1L) <= now) {
             System.arraycopy(this.speeds, 0, this.speeds, 1, this.speeds.length - 1);
             this.speeds[0] = ((this.done - this.lastDone) * TimeUnit.SECONDS.toNanos(1L)) / (double) (now - this.lastTime);
             this.lastDone = this.done;
@@ -64,7 +67,14 @@ public class ProgressMonitor {
                     (double) this.done / this.total * 100.0d,
                     speed,
                     eta.toDays(), eta.toHours() - TimeUnit.DAYS.toHours(eta.toDays()), eta.toMinutes() - TimeUnit.HOURS.toMinutes(eta.toHours()), eta.getSeconds() - TimeUnit.MINUTES.toSeconds(eta.toMinutes()));
-            System.out.flush();
+
+            if (ANSI) {
+                if (this.done == this.total) {
+                    System.out.println();
+                } else {
+                    System.out.flush();
+                }
+            }
         }
     }
 }

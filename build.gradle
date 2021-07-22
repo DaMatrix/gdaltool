@@ -23,7 +23,7 @@ apply plugin: "java"
 ext {
     //general things
     javaVersion = "1.8"
-    programVersion = "0.0.8"
+    programVersion = "0.0.9"
 
     //dependency things
     gdalVersion = "3.0.0"
