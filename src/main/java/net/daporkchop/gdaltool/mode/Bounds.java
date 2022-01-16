@@ -1,7 +1,7 @@
 /*
  * Adapted from The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 DaPorkchop_
+ * Copyright (c) 2020-2022 DaPorkchop_
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation
  * files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,
@@ -23,6 +23,7 @@ package net.daporkchop.gdaltool.mode;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.SneakyThrows;
 import lombok.ToString;
@@ -36,6 +37,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Optional;
+import java.util.stream.Stream;
 
 import static java.lang.Math.*;
 import static net.daporkchop.gdaltool.util.GdalHelper.*;
@@ -72,8 +75,6 @@ public class Bounds {
     public Bounds(@NonNull Path inputFile, @NonNull Options options) {
         checkArg((this.inputDataset = gdal.Open(inputFile.toString(), GA_ReadOnly)) != null, "unable to open input file: \"%s\"", inputFile);
         checkArg(this.inputDataset.getRasterCount() != 0, "input file \"%s\" has no raster bands", inputFile);
-        System.out.printf("input file: (%dP x %dL - %d bands)\n",
-                this.inputDataset.getRasterXSize(), this.inputDataset.getRasterYSize(), this.inputDataset.getRasterCount());
 
         this.in_srs = setupInputSrs(this.inputDataset, options.s_srs());
 
@@ -92,8 +93,6 @@ public class Bounds {
         if (!this.in_srs.ExportToWkt().equals(this.out_srs.ExportToWkt()) || this.inputDataset.GetGCPCount() != 0) {
             warpedInputDataset = gdal.AutoCreateWarpedVRT(this.inputDataset, this.in_srs.ExportToWkt(), this.out_srs.ExportToWkt());
         }
-        System.out.printf("projected input file: (%dP x %dL - %d bands)\n",
-                warpedInputDataset.getRasterXSize(), warpedInputDataset.getRasterYSize(), warpedInputDataset.getRasterCount());
         String tempFile = Files.createTempFile("tiles", ".vrt").toString();
         getDriverByName("VRT").CreateCopy(tempFile, warpedInputDataset);
 
@@ -111,29 +110,50 @@ public class Bounds {
         double minZ = min(out_bounds.minY(), out_bounds.maxY());
         double maxZ = max(out_bounds.minY(), out_bounds.maxY());
 
-        System.out.printf("Terra++ v1.0 format:\n\n"
-                          + "            \"minX\": %1$s,\n"
-                          + "            \"maxX\": %2$s,\n"
-                          + "            \"minZ\": %3$s,\n"
-                          + "            \"maxZ\": %4$s\n\n"
-                          + "Terra++ v2.0 format:\n\n"
-                          + "        \"projection\": \"EPSG:4326\",\n"
-                          + "        \"geometry\": {\n"
-                          + "            \"type\": \"Polygon\",\n"
-                          + "            \"coordinates\": [\n"
-                          + "                [\n"
-                          + "                    [%1$s, %3$s],\n"
-                          + "                    [%2$s, %3$s],\n"
-                          + "                    [%2$s, %4$s],\n"
-                          + "                    [%1$s, %4$s],\n"
-                          + "                    [%1$s, %3$s]\n"
-                          + "                ]\n"
-                          + "            ]\n"
-                          + "        }\n",
-                minX, maxX, minZ, maxZ);
+        if (options.format().isPresent()) {
+            System.out.printf(options.format().get().format, minX, maxX, minZ, maxZ);
+        } else {
+            for (Format format : Format.values()) {
+                System.out.printf("%s:\n\n", format.name);
+                System.out.printf(format.format, minX, maxX, minZ, maxZ);
+                System.out.println();
+            }
+        }
 
         warpedInputDataset.delete();
         this.inputDataset.delete();
+    }
+
+    @RequiredArgsConstructor
+    private enum Format {
+        TERRAPLUSPLUS_v1("Terra++ v1.0",
+                ""
+                + "            \"minX\": %1$s,\n"
+                + "            \"maxX\": %2$s,\n"
+                + "            \"minZ\": %3$s,\n"
+                + "            \"maxZ\": %4$s\n\n"),
+        TERRAPLUSPLUS_v1_MIN("Terra++ v1.0 (minified)",
+                "\"minX\":%1$s,\"maxX\":%2$s,\"minZ\":%3$s,\"maxZ\":%4$s"),
+        TERRAPLUSPLUS_v2("Terra++ v2.0",
+                                 ""
+                                 + "        \"projection\": \"EPSG:4326\",\n"
+                                 + "        \"geometry\": {\n"
+                                 + "            \"type\": \"Polygon\",\n"
+                                 + "            \"coordinates\": [\n"
+                                 + "                [\n"
+                                 + "                    [%1$s, %3$s],\n"
+                                 + "                    [%2$s, %3$s],\n"
+                                 + "                    [%2$s, %4$s],\n"
+                                 + "                    [%1$s, %4$s],\n"
+                                 + "                    [%1$s, %3$s]\n"
+                                 + "                ]\n"
+                                 + "            ]\n"
+                                 + "        }\n");
+
+        @NonNull
+        private final String name;
+        @NonNull
+        private final String format;
     }
 
     @Getter
@@ -141,6 +161,8 @@ public class Bounds {
     @ToString
     @EqualsAndHashCode
     public static class Options {
-        protected String s_srs = null;
+        protected String s_srs = System.getProperty("s_srs");
+
+        protected Optional<Format> format = Optional.ofNullable(System.getProperty("format")).map(Format::valueOf);
     }
 }

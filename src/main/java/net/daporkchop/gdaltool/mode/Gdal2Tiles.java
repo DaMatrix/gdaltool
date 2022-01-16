@@ -1,7 +1,7 @@
 /*
  * Adapted from The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 DaPorkchop_
+ * Copyright (c) 2020-2022 DaPorkchop_
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation
  * files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,
@@ -170,8 +170,8 @@ public class Gdal2Tiles {
         this.out_options = options.options();
         this.scale = options.scale();
 
-        checkState(options.resampling().name().toUpperCase().equals(System.getenv("GDAL_RASTERIO_RESAMPLING")),
-                "must set environment variable GDAL_RASTERIO_RESAMPLING=%s", options.resampling().name().toUpperCase());
+        gdal.SetConfigOption("GDAL_RASTERIO_RESAMPLING", options.resampling().name().toUpperCase());
+        gdal.SetConfigOption("VRT_SHARED_SOURCE", "0");
 
         this.outDrv = getDriverByName(options.tileDriver());
 
