@@ -20,14 +20,10 @@
 
 package net.daporkchop.gdaltool.mode;
 
-import lombok.EqualsAndHashCode;
-import lombok.Getter;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.SneakyThrows;
-import lombok.ToString;
-import net.daporkchop.gdaltool.Main;
 import net.daporkchop.gdaltool.tilematrix.RasterTileMatrix;
 import net.daporkchop.gdaltool.tilematrix.TileMatrix;
 import net.daporkchop.gdaltool.tilematrix.WGS84TileMatrix;
@@ -39,6 +35,8 @@ import net.daporkchop.gdaltool.util.geom.Bounds2d;
 import net.daporkchop.gdaltool.util.geom.Bounds2l;
 import net.daporkchop.gdaltool.util.geom.Point2d;
 import net.daporkchop.gdaltool.util.geom.Point2l;
+import net.daporkchop.gdaltool.util.option.Arguments;
+import net.daporkchop.gdaltool.util.option.Option;
 import net.daporkchop.lib.unsafe.PUnsafe;
 import org.gdal.gdal.Band;
 import org.gdal.gdal.Dataset;
@@ -51,10 +49,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Vector;
 import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.RecursiveTask;
@@ -74,16 +71,50 @@ import static org.gdal.osr.osr.*;
  * @author DaPorkchop_
  */
 @Setter
-public class Gdal2Tiles {
-    static {
-        Main.init();
-    }
+public class Gdal2Tiles implements Mode {
+    private static final Option<Integer> TILE_SIZE = Option.integer("-tileSize", 256, 1, Integer.MAX_VALUE);
 
-    public static void main(@NonNull String[] args) {
-        checkArg(args.length == 2, "usage: gdal2tiles <input_dataset> <output_directory>");
+    private static final Option<Integer> MIN_ZOOM = Option.integer("-minZoom", -1, 0, Integer.MAX_VALUE);
+    private static final Option<Integer> MAX_ZOOM = Option.integer("-maxZoom", -1, 0, Integer.MAX_VALUE);
 
-        new Gdal2Tiles(Paths.get(args[0]), Paths.get(args[1]), new Options()).run();
-    }
+    private static final Option<Double[]> A_NODATA = new Option.BaseOption<Double[]>("-a_nodata") {
+        @Override
+        public Double[] parse(@NonNull String word, @NonNull Iterator<String> itr) {
+            return Stream.of(itr.next().split(","))
+                    .map(v -> "none".equalsIgnoreCase(v) || "null".equalsIgnoreCase(v) ? null : Double.parseDouble(v))
+                    .toArray(Double[]::new);
+        }
+
+        @Override
+        public Double[] fallbackValue() {
+            return null;
+        }
+    };
+
+    private static final Option<String> TILE_DRIVER = Option.text("-tileDriver", "GTiff");
+    private static final Option<String> TILE_EXT = Option.text("-tileExt", "tiff");
+
+    private static final Option<Resampling> RESAMPLING = Option.ofEnum("-resampling", Resampling.class, Resampling.CubicSpline);
+    private static final Option<DataType> DATA_TYPE = Option.ofEnum("-dataType", DataType.class, DataType.Default);
+
+    private static final Option<Double> SCALE = Option.ofDouble("-scale", 1.0d);
+
+    private static final Option<Vector<String>> OPTIONS = new Option.BaseOption<Vector<String>>("-options") {
+        @Override
+        public Vector<String> parse(@NonNull String word, @NonNull Iterator<String> itr) {
+            return new Vector<>(Arrays.asList(itr.next().split(",")));
+        }
+
+        @Override
+        public Vector<String> fallbackValue() {
+            return new Vector<>();
+        }
+    };
+
+    private static final Option<String> S_SRS = Option.text("-s_srs", null);
+
+    private static final Option<CuttingProfile> CUTTING_PROFILE = Option.ofEnum("-cutting", CuttingProfile.class, CuttingProfile.MERCATOR);
+    private static final Option<Boolean> XYZ = Option.flag("-xyz");
 
     protected static GeoQuery geoQuery(@NonNull double[] gt, int rasterX, int rasterY, int querySize, double ulx, double uly, double lrx, double lry) {
         int rx = (int) ((ulx - gt[0]) / gt[1] + 0.001d);
@@ -123,80 +154,115 @@ public class Gdal2Tiles {
         return new GeoQuery(rx, ry, rxSize, rySize, wx, wy, wxSize, wySize);
     }
 
-    protected final Dataset inputDataset;
-    protected final ThreadLocal<Dataset> tlWarpedInputDataset;
-    protected final ThreadLocal<ByteBuffer> tlBuffer;
-    protected final ByteBuffer emptyTileBuffer;
-    protected final int input_bands;
-    protected final DataType input_dataType;
-    protected final DataType output_dataType;
-    protected final int[] allBands;
-    protected final Double[] input_noDataValues;
-    protected final Double[] output_noDataValues;
+    protected Dataset inputDataset;
+    protected ThreadLocal<Dataset> tlWarpedInputDataset;
+    protected ThreadLocal<ByteBuffer> tlBuffer;
+    protected ByteBuffer emptyTileBuffer;
+    protected int input_bands;
+    protected DataType input_dataType;
+    protected DataType output_dataType;
+    protected int[] allBands;
+    protected Double[] input_noDataValues;
+    protected Double[] output_noDataValues;
 
-    protected final Path outputFolder;
-    protected final String outExt;
-    protected final Driver outDrv;
+    protected Path outputFolder;
+    protected String outExt;
+    protected Driver outDrv;
 
-    protected final Resampling resampling;
-    protected final CuttingProfile profile;
+    protected Resampling resampling;
+    protected CuttingProfile profile;
 
-    protected final SpatialReference in_srs;
-    protected final SpatialReference out_srs;
-    protected final String out_srsWkt;
-    protected final Bounds2l[] tMinMax;
+    protected SpatialReference in_srs;
+    protected SpatialReference out_srs;
+    protected String out_srsWkt;
+    protected Bounds2l[] tMinMax;
     protected TileMatrix tileMatrix;
 
-    protected final int minZoom;
-    protected final int maxZoom;
+    protected int minZoom;
+    protected int maxZoom;
 
-    protected final double[] out_gt;
-    protected final int out_rasterXSize;
-    protected final int out_rasterYSize;
-    protected final Bounds2d out_bounds;
-    protected final Vector<String> out_options;
+    protected double[] out_gt;
+    protected int out_rasterXSize;
+    protected int out_rasterYSize;
+    protected Bounds2d out_bounds;
+    protected Vector<String> out_options;
 
-    protected final int tileSize;
-    protected final boolean xyz;
+    protected int tileSize;
+    protected boolean xyz;
 
-    protected final double scale;
+    protected double scale;
 
+    @Override
+    public void printUsage() {
+        System.err.println("  gdal2tiles:");
+        System.err.println("    Computes the bounds of a given dataset.");
+        System.err.println();
+        System.err.println("    Usage:");
+        System.err.println("      gdal2tiles [options] <input_dataset> <output_directory>");
+        System.err.println();
+        System.err.println("    Options:");
+        System.err.println("      --tileSize <size>           Sets the horizontal and vertical resolution of the generated tiles. Default: 256");
+        System.err.println("      --minZoom <zoom>            Sets the minimum zoom level at which to generate tiles (inclusive). Default: 0");
+        System.err.println("      --maxZoom <zoom>            Sets the maximum zoom level at which to generate tiles (inclusive). Default: automatic");
+        System.err.println("      --a_nodata <nodata,...>     Defines the nodata value to be set for output tiles. Multiple comma-separated values may be given. Default: copied from input dataset");
+        System.err.println("      --tileDriver <driver>       Sets the GDAL driver used for creating the output tiles. Default: GTiff");
+        System.err.println("      --tileExt <ext>             Sets the filename extension appended to output tiles. Default: tiff");
+        System.err.println("      --resampling <resampling>   Sets the resampling algorithm used when reprojecting/rescaling. Default: CubicSpline");
+        System.err.println("      --dataType <data_type>      Sets the data type to be used in output tiles. Default: copied from input dataset");
+        System.err.println("      --scale <scale>             A constant factor to multiply all values by before writing them to the output dataset. Default: 1.0");
+        System.err.println("      --options <options,...>     Additional comma-separated dataset creation options to pass to the GDAL driver when creating the output tiles. Default: none");
+        System.err.println("      --s_srs <SRS>               If present, overrides the dataset's SRS.");
+        System.err.println("      --cutting <cutting>         Sets the cutting profile used to split the input dataset into square tiles. Default: MERCATOR");
+        System.err.println("      --xyz                       If present, use a different y coordinate order for output filenames.");
+    }
+
+    @Override
+    public Arguments arguments() {
+        return new Arguments(true, true, TILE_SIZE, MIN_ZOOM, MAX_ZOOM, A_NODATA, TILE_DRIVER, TILE_EXT, RESAMPLING, DATA_TYPE, SCALE, OPTIONS, S_SRS, CUTTING_PROFILE, XYZ);
+    }
+
+    @Override
+    public String name() {
+        return "gdal2tiles";
+    }
+
+    @Override
     @SneakyThrows(IOException.class)
-    public Gdal2Tiles(@NonNull Path inputFile, @NonNull Path outputFolder, @NonNull Options options) {
-        this.tileSize = options.tileSize();
-        this.resampling = options.resampling();
-        this.profile = options.profile();
-        this.xyz = options.xyz();
-        this.out_options = options.options();
-        this.scale = options.scale();
+    public void run(@NonNull Arguments args) {
+        this.tileSize = args.get(TILE_SIZE);
+        this.resampling = args.get(RESAMPLING);
+        this.profile = args.get(CUTTING_PROFILE);
+        this.xyz = args.get(XYZ);
+        this.out_options = args.get(OPTIONS);
+        this.scale = args.get(SCALE);
 
-        gdal.SetConfigOption("GDAL_RASTERIO_RESAMPLING", options.resampling().name().toUpperCase());
+        gdal.SetConfigOption("GDAL_RASTERIO_RESAMPLING", this.resampling.name().toUpperCase());
         gdal.SetConfigOption("VRT_SHARED_SOURCE", "0");
 
-        this.outDrv = getDriverByName(options.tileDriver());
+        this.outDrv = getDriverByName(args.get(TILE_DRIVER));
 
-        this.outputFolder = Files.createDirectories(outputFolder);
-        this.outExt = options.tileExt();
+        this.outputFolder = Files.createDirectories(args.getDestination());
+        this.outExt = args.get(TILE_EXT);
 
-        int minZoom = options.minZoom();
-        int maxZoom = options.maxZoom();
+        int minZoom = args.get(MIN_ZOOM);
+        int maxZoom = args.get(MAX_ZOOM);
         checkArg(minZoom >> 31 == maxZoom >> 31, "minZoom and maxZoom must be either both set or both unset");
         checkArg(minZoom <= maxZoom, "minZoom (%d) must not be greater than maxZoom (%d)", minZoom, maxZoom);
 
-        checkArg((this.inputDataset = gdal.Open(inputFile.toString(), GA_ReadOnly)) != null, "unable to open input file: \"%s\"", inputFile);
-        checkArg(this.inputDataset.getRasterCount() != 0, "input file \"%s\" has no raster bands", inputFile);
+        checkArg((this.inputDataset = gdal.Open(args.getSource().toString(), GA_ReadOnly)) != null, "unable to open input file: \"%s\"", args.getSource());
+        checkArg(this.inputDataset.getRasterCount() != 0, "input file \"%s\" has no raster bands", args.getSource());
         System.out.printf("input file: (%dP x %dL - %d bands)\n",
                 this.inputDataset.getRasterXSize(), this.inputDataset.getRasterYSize(), this.inputDataset.getRasterCount());
         this.input_bands = this.inputDataset.GetRasterCount();
         this.input_dataType = DataType.byId(this.inputDataset.GetRasterBand(1).GetRasterDataType());
-        this.output_dataType = options.dataType() == DataType.Default ? this.input_dataType : options.dataType;
+        this.output_dataType = args.get(DATA_TYPE) == DataType.Default ? this.input_dataType : args.get(DATA_TYPE);
         this.allBands = IntStream.rangeClosed(1, this.input_bands).toArray();
         this.tlBuffer = ThreadLocal.withInitial(() -> ByteBuffer.allocateDirect(this.tileSize * this.tileSize * DataType.Float64.sizeBytes() * this.input_bands).order(ByteOrder.nativeOrder()));
         this.input_noDataValues = getNoDataValues(this.inputDataset);
-        this.output_noDataValues = options.a_nodata.orElse(this.input_noDataValues);
+        this.output_noDataValues = args.get(A_NODATA) == null ? this.input_noDataValues : args.get(A_NODATA);
         checkState(this.input_noDataValues.length == this.output_noDataValues.length, "a_nodata must contain %d values, but found %d", this.input_noDataValues.length, this.output_noDataValues.length);
 
-        this.in_srs = setupInputSrs(this.inputDataset, options.s_srs());
+        this.in_srs = setupInputSrs(this.inputDataset, args.get(S_SRS));
 
         if (this.profile != CuttingProfile.RASTER) {
             checkArg(this.in_srs != null, "Input file has unknown SRS! Use '--s_srs EPSG:<xyz> or similar to provide source reference system.");
@@ -273,7 +339,7 @@ public class Gdal2Tiles {
     }
 
     protected void scaleValues(@NonNull ByteBuffer buffer) {
-        for (int i = 0; i < buffer.capacity(); i += Double.BYTES)  {
+        for (int i = 0; i < buffer.capacity(); i += Double.BYTES) {
             buffer.putDouble(i, this.output_dataType.processNodata(buffer.getDouble(i) * this.scale));
         }
     }
@@ -606,49 +672,5 @@ public class Gdal2Tiles {
                     new TilePos((this.tx << 1L) + 1L, (this.ty << 1L) + 1L, this.tz + 1)
             };
         }
-    }
-
-    @Getter
-    @Setter
-    @ToString
-    @EqualsAndHashCode
-    public static class Options {
-        protected static Vector<String> parseOptions(String opts) {
-            Vector<String> vector = new Vector<>();
-
-            if (opts != null) {
-                vector.addAll(Arrays.asList(opts.split(",")));
-            }
-
-            return vector;
-        }
-
-        protected int tileSize = 256;
-
-        protected int minZoom = Integer.parseInt(System.getProperty("minZoom", "-1"));
-        protected int maxZoom = Integer.parseInt(System.getProperty("maxZoom", "-1"));
-
-        protected Optional<Double[]> a_nodata = Optional.ofNullable(System.getProperty("a_nodata"))
-                .map(s -> Stream.of(s.split(",")).map(v -> "none".equalsIgnoreCase(v) || "null".equalsIgnoreCase(v) ? null : Double.parseDouble(v)).toArray(Double[]::new));
-
-        @NonNull
-        protected String tileDriver = "GTiff";
-        @NonNull
-        protected String tileExt = "tiff";
-
-        @NonNull
-        protected Resampling resampling = Resampling.valueOf(System.getProperty("resampling", Resampling.CubicSpline.name()));
-        @NonNull
-        protected DataType dataType = DataType.valueOf(System.getProperty("dataType", DataType.Default.name()));
-        protected double scale = Double.parseDouble(System.getProperty("scale", "1"));
-
-        protected Vector<String> options = parseOptions(System.getProperty("options"));
-
-        protected String s_srs = null;
-
-        @NonNull
-        protected CuttingProfile profile = CuttingProfile.valueOf(System.getProperty("cutting", CuttingProfile.MERCATOR.name()));
-
-        protected boolean xyz = Boolean.parseBoolean(System.getProperty("xyz", ((Boolean) (this.profile != CuttingProfile.RASTER)).toString()));
     }
 }

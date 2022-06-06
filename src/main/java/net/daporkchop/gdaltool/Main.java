@@ -1,7 +1,7 @@
 /*
  * Adapted from The MIT License (MIT)
  *
- * Copyright (c) 2020-2021 DaPorkchop_
+ * Copyright (c) 2020-2022 DaPorkchop_
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation
  * files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,
@@ -22,23 +22,25 @@ package net.daporkchop.gdaltool;
 
 import net.daporkchop.gdaltool.mode.Bounds;
 import net.daporkchop.gdaltool.mode.Gdal2Tiles;
+import net.daporkchop.gdaltool.mode.Mode;
+import net.daporkchop.gdaltool.util.option.Arguments;
 import org.gdal.gdal.gdal;
 
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Map;
-import java.util.function.Consumer;
+import java.util.TreeMap;
+import java.util.function.Supplier;
 
 import static net.daporkchop.lib.common.util.PValidation.*;
 
 public class Main {
-    private static final Map<String, Consumer<String[]>> MODES = new HashMap<>();
+    private static final Map<String, Supplier<Mode>> MODES = new TreeMap<>();
 
     static {
         gdal.AllRegister();
 
-        MODES.put("bounds", Bounds::main);
-        MODES.put("gdal2tiles", Gdal2Tiles::main);
+        MODES.put("bounds", Bounds::new);
+        MODES.put("gdal2tiles", Gdal2Tiles::new);
     }
 
     /**
@@ -50,9 +52,20 @@ public class Main {
     public static void main(String... args) {
         checkArg(args.length >= 1, "usage: gdaltool <mode name> [arguments]...");
 
-        Consumer<String[]> mode = MODES.get(args[0]);
-        checkArg(mode != null, "unknown mode: %s", args[0]);
+        Supplier<Mode> modeFactory = MODES.get(args[0]);
+        if (modeFactory == null) {
+            System.err.println("Unknown mode: '" + args[0] + '\'');
+            System.err.println();
+            System.err.println("Available modes:");
+            MODES.forEach((name, factory) -> factory.get().printUsage());
+            return;
+        }
 
-        mode.accept(Arrays.copyOfRange(args, 1, args.length));
+        Mode mode = modeFactory.get();
+
+        Arguments arguments = mode.arguments();
+        arguments.load(Arrays.asList(Arrays.copyOfRange(args, 1, args.length)).iterator());
+
+        mode.run(arguments);
     }
 }
