@@ -316,6 +316,8 @@ public class Gdal2Tiles implements Mode {
         Dataset ds = this.createMemTile(this.tileSize);
         ds.ReadRaster_Direct(0, 0, this.tileSize, this.tileSize, this.tileSize, this.tileSize, DataType.Float64.gdal(), this.emptyTileBuffer, this.allBands);
         ds.delete();
+
+        this.run();
     }
 
     protected Dataset createMemTile(int size) {

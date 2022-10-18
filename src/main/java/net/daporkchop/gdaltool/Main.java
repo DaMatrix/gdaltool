@@ -50,7 +50,13 @@ public class Main {
     }
 
     public static void main(String... args) {
-        checkArg(args.length >= 1, "usage: gdaltool <mode name> [arguments]...");
+        if (args.length < 1) {
+            System.err.println("usage: gdaltool <mode name> [arguments]...");
+            System.err.println();
+            System.err.println("Available modes:");
+            MODES.forEach((name, factory) -> factory.get().printUsage());
+            return;
+        }
 
         Supplier<Mode> modeFactory = MODES.get(args[0]);
         if (modeFactory == null) {
