@@ -1,7 +1,7 @@
 /*
  * Adapted from The MIT License (MIT)
  *
- * Copyright (c) 2020-2022 DaPorkchop_
+ * Copyright (c) 2020-2023 DaPorkchop_
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation
  * files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,
@@ -53,7 +53,9 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Objects;
 import java.util.Vector;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinTask;
+import java.util.concurrent.ForkJoinWorkerThread;
 import java.util.concurrent.RecursiveTask;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -76,6 +78,7 @@ public class Gdal2Tiles implements Mode {
 
     private static final Option<Integer> MIN_ZOOM = Option.integer("-minZoom", -1, 0, Integer.MAX_VALUE);
     private static final Option<Integer> MAX_ZOOM = Option.integer("-maxZoom", -1, 0, Integer.MAX_VALUE);
+    private static final Option<Integer> CLAMP_MAX_ZOOM = Option.integer("-clampMaxZoom", -1, 0, Integer.MAX_VALUE);
 
     private static final Option<Double[]> A_NODATA = new Option.BaseOption<Double[]>("-a_nodata") {
         @Override
@@ -154,6 +157,8 @@ public class Gdal2Tiles implements Mode {
         return new GeoQuery(rx, ry, rxSize, rySize, wx, wy, wxSize, wySize);
     }
 
+    protected ForkJoinPool forkJoinPool;
+
     protected Dataset inputDataset;
     protected ThreadLocal<Dataset> tlWarpedInputDataset;
     protected ThreadLocal<ByteBuffer> tlBuffer;
@@ -204,6 +209,7 @@ public class Gdal2Tiles implements Mode {
         System.err.println("      --tileSize <size>           Sets the horizontal and vertical resolution of the generated tiles. Default: 256");
         System.err.println("      --minZoom <zoom>            Sets the minimum zoom level at which to generate tiles (inclusive). Default: 0");
         System.err.println("      --maxZoom <zoom>            Sets the maximum zoom level at which to generate tiles (inclusive). Default: automatic");
+        System.err.println("      --clampMaxZoom <zoom>       Sets the maximum zoom level at which to generate tiles (inclusive). Mutually exclusive with --maxZoom. When this option is set, the maximum zoom level will be determined automatically, but will be no higher than this value.");
         System.err.println("      --a_nodata <nodata,...>     Defines the nodata value to be set for output tiles. Multiple comma-separated values may be given. Default: copied from input dataset");
         System.err.println("      --tileDriver <driver>       Sets the GDAL driver used for creating the output tiles. Default: GTiff");
         System.err.println("      --tileExt <ext>             Sets the filename extension appended to output tiles. Default: tiff");
@@ -218,7 +224,7 @@ public class Gdal2Tiles implements Mode {
 
     @Override
     public Arguments arguments() {
-        return new Arguments(true, true, TILE_SIZE, MIN_ZOOM, MAX_ZOOM, A_NODATA, TILE_DRIVER, TILE_EXT, RESAMPLING, DATA_TYPE, SCALE, OPTIONS, S_SRS, CUTTING_PROFILE, XYZ);
+        return new Arguments(true, true, TILE_SIZE, MIN_ZOOM, MAX_ZOOM, CLAMP_MAX_ZOOM, A_NODATA, TILE_DRIVER, TILE_EXT, RESAMPLING, DATA_TYPE, SCALE, OPTIONS, S_SRS, CUTTING_PROFILE, XYZ);
     }
 
     @Override
@@ -246,8 +252,10 @@ public class Gdal2Tiles implements Mode {
 
         int minZoom = args.get(MIN_ZOOM);
         int maxZoom = args.get(MAX_ZOOM);
+        int clampMaxZoom = args.get(CLAMP_MAX_ZOOM);
         checkArg(minZoom >> 31 == maxZoom >> 31, "minZoom and maxZoom must be either both set or both unset");
         checkArg(minZoom <= maxZoom, "minZoom (%d) must not be greater than maxZoom (%d)", minZoom, maxZoom);
+        checkArg(!(clampMaxZoom >= 0 && maxZoom >= 0), "maxZoom and clampMaxZoom may not be used together!");
 
         checkArg((this.inputDataset = gdal.Open(args.getSource().toString(), GA_ReadOnly)) != null, "unable to open input file: \"%s\"", args.getSource());
         checkArg(this.inputDataset.getRasterCount() != 0, "input file \"%s\" has no raster bands", args.getSource());
@@ -286,7 +294,28 @@ public class Gdal2Tiles implements Mode {
                 warpedInputDataset.getRasterXSize(), warpedInputDataset.getRasterYSize(), warpedInputDataset.getRasterCount());
         String tempFile = Files.createTempFile("tiles", ".vrt").toString();
         getDriverByName("VRT").CreateCopy(tempFile, warpedInputDataset);
-        this.tlWarpedInputDataset = ThreadLocal.withInitial(() -> gdal.Open(tempFile, GA_ReadOnly));
+        this.tlWarpedInputDataset = new ThreadLocal<>();
+
+        this.forkJoinPool = new ForkJoinPool(ForkJoinPool.getCommonPoolParallelism(), pool -> new ForkJoinWorkerThread(pool) {
+            @Override
+            protected void onStart() {
+                //synchronize on opening the input dataset, since having multiple threads open the same dataset at once seems to cause
+                // some kind of lock contention in internal gdal code and can result in multiple minutes of idle time before any work actually gets done
+                synchronized (Gdal2Tiles.this.tlWarpedInputDataset) {
+                    Gdal2Tiles.this.tlWarpedInputDataset.set(gdal.Open(tempFile, GA_ReadOnly));
+                }
+
+                super.onStart();
+            }
+
+            @Override
+            protected void onTermination(Throwable exception) {
+                Gdal2Tiles.this.tlWarpedInputDataset.get().delete();
+                Gdal2Tiles.this.tlWarpedInputDataset.remove();
+
+                super.onTermination(exception);
+            }
+        }, null, false);
 
         this.out_gt = warpedInputDataset.GetGeoTransform();
         this.out_rasterXSize = warpedInputDataset.getRasterXSize();
@@ -301,6 +330,8 @@ public class Gdal2Tiles implements Mode {
         if (minZoom < 0) {
             minZoom = 0;
             maxZoom = projectionData.defaultMaxZoom;
+            if (clampMaxZoom >= 0)
+                maxZoom = Math.min(maxZoom, clampMaxZoom);
         }
         this.tileMatrix = projectionData.tileMatrix;
         this.tMinMax = projectionData.tMinMax;
@@ -349,6 +380,11 @@ public class Gdal2Tiles implements Mode {
     protected boolean isValid(@NonNull TilePos pos) {
         Bounds2l tBounds = this.tMinMax[pos.tz];
         return pos.tx >= tBounds.minX() && pos.tx <= tBounds.maxX() && pos.ty >= tBounds.minY() && pos.ty <= tBounds.maxY();
+    }
+
+    protected long getTilePositionCount(int zoom) {
+        Bounds2l tBounds = this.tMinMax[zoom];
+        return multiplyExact(tBounds.maxX() - tBounds.minX() + 1L, tBounds.maxY() - tBounds.minY() + 1L);
     }
 
     protected Stream<TilePos> getTilePositions(int zoom) {
@@ -509,13 +545,14 @@ public class Gdal2Tiles implements Mode {
     }
 
     public void run() {
-        long count = IntStream.rangeClosed(this.minZoom, this.maxZoom).boxed().flatMap(this::getTilePositions).parallel().count();
+        long count = IntStream.rangeClosed(this.minZoom, this.maxZoom).mapToLong(this::getTilePositionCount).sum();
         System.out.printf("rendering %d tiles...\n", count);
         ProgressMonitor monitor = new ProgressMonitor(count);
 
-        this.getTilePositions(this.minZoom).parallel()
+        this.getTilePositions(this.minZoom)
                 .map(pos -> this.createTile(pos, monitor::step))
-                .peek(ForkJoinTask::fork)
+                .peek(this.forkJoinPool::submit)
+                .collect(Collectors.toList()).stream() //buffer into a list to force all tasks to be submitted before continuing
                 .map(ForkJoinTask::join)
                 .filter(Objects::nonNull)
                 .forEach(Dataset::delete);
